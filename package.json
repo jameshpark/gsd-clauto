@@ -1,6 +1,6 @@
 {
   "name": "gsd-pi",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "GSD — Get Stuff Done coding agent",
   "license": "MIT",
   "repository": {
@@ -41,6 +41,7 @@
   },
   "dependencies": {
     "@mariozechner/pi-coding-agent": "^0.57.1",
+    "gsd-pi": "^0.1.7",
     "playwright": "^1.58.2"
   },
   "devDependencies": {
