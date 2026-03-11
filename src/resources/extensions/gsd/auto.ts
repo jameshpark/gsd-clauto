@@ -247,6 +247,14 @@ export async function startAuto(
     if (!getLedger()) initMetrics(base);
     ctx.ui.setStatus("gsd-auto", stepMode ? "next" : "auto");
     ctx.ui.notify(stepMode ? "Step-mode resumed." : "Auto-mode resumed.", "info");
+    // Rebuild disk state before resuming — user interaction during pause may have changed files
+    try { await rebuildState(base); } catch { /* non-fatal */ }
+    try {
+      const report = await runGSDDoctor(base, { fix: true });
+      if (report.fixesApplied.length > 0) {
+        ctx.ui.notify(`Resume: applied ${report.fixesApplied.length} fix(es) to state.`, "info");
+      }
+    } catch { /* non-fatal */ }
     await dispatchNextUnit(ctx, pi);
     return;
   }
@@ -758,7 +766,12 @@ async function dispatchNextUnit(
   ctx: ExtensionContext,
   pi: ExtensionAPI,
 ): Promise<void> {
-  if (!active || !cmdCtx) return;
+  if (!active || !cmdCtx) {
+    if (active && !cmdCtx) {
+      ctx.ui.notify("Auto-mode dispatch failed: no command context. Run /gsd auto to restart.", "error");
+    }
+    return;
+  }
 
   let state = await deriveState(basePath);
   let mid = state.activeMilestone?.id;
@@ -1086,7 +1099,7 @@ async function dispatchNextUnit(
     const allModels = ctx.modelRegistry.getAll();
     const model = allModels.find(m => m.id === preferredModelId);
     if (model) {
-      const ok = await pi.setModel(model);
+      const ok = await pi.setModel(model, { persist: false });
       if (ok) {
         ctx.ui.notify(`Model: ${preferredModelId}`, "info");
       }
@@ -1186,7 +1199,8 @@ async function dispatchNextUnit(
     await pauseAuto(ctx, pi);
   }, hardTimeoutMs);
 
-  // Inject prompt
+  // Inject prompt — verify auto-mode still active (guards against race with timeout/pause)
+  if (!active) return;
   pi.sendMessage(
     { customType: "gsd-auto", content: finalPrompt, display: verbose },
     { triggerTurn: true },

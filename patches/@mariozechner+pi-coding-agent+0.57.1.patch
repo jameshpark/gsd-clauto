@@ -1,3 +1,63 @@
+diff --git a/node_modules/@mariozechner/pi-coding-agent/dist/core/agent-session.js b/node_modules/@mariozechner/pi-coding-agent/dist/core/agent-session.js
+index 90622c2..cff094b 100644
+--- a/node_modules/@mariozechner/pi-coding-agent/dist/core/agent-session.js
++++ b/node_modules/@mariozechner/pi-coding-agent/dist/core/agent-session.js
+@@ -1007,7 +1007,7 @@ export class AgentSession {
+      * Validates API key, saves to session and settings.
+      * @throws Error if no API key available for the model
+      */
+-    async setModel(model) {
++    async setModel(model, options) {
+         const apiKey = await this._modelRegistry.getApiKey(model);
+         if (!apiKey) {
+             throw new Error(`No API key for ${model.provider}/${model.id}`);
+@@ -1016,7 +1016,9 @@ export class AgentSession {
+         const thinkingLevel = this._getThinkingLevelForModelSwitch();
+         this.agent.setModel(model);
+         this.sessionManager.appendModelChange(model.provider, model.id);
+-        this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
++        if (options?.persist !== false) {
++            this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
++        }
+         // Re-clamp thinking level for new model's capabilities
+         this.setThinkingLevel(thinkingLevel);
+         await this._emitModelSelect(model, previousModel, "set");
+@@ -1067,7 +1069,9 @@ export class AgentSession {
+         // Apply model
+         this.agent.setModel(next.model);
+         this.sessionManager.appendModelChange(next.model.provider, next.model.id);
+-        this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
++        if (options?.persist !== false) {
++            this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
++        }
+         // Apply thinking level.
+         // - Explicit scoped model thinking level overrides current session level
+         // - Undefined scoped model thinking level inherits the current session preference
+@@ -1094,7 +1098,9 @@ export class AgentSession {
+         const thinkingLevel = this._getThinkingLevelForModelSwitch();
+         this.agent.setModel(nextModel);
+         this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+-        this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
++        if (options?.persist !== false) {
++            this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
++        }
+         // Re-clamp thinking level for new model's capabilities
+         this.setThinkingLevel(thinkingLevel);
+         await this._emitModelSelect(nextModel, currentModel, "cycle");
+@@ -1659,11 +1665,11 @@ export class AgentSession {
+             setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
+             refreshTools: () => this._refreshToolRegistry(),
+             getCommands,
+-            setModel: async (model) => {
++            setModel: async (model, options) => {
+                 const key = await this.modelRegistry.getApiKey(model);
+                 if (!key)
+                     return false;
+-                await this.setModel(model);
++                await this.setModel(model, options);
+                 return true;
+             },
+             getThinkingLevel: () => this.thinkingLevel,
 diff --git a/node_modules/@mariozechner/pi-coding-agent/dist/core/tools/bash.js b/node_modules/@mariozechner/pi-coding-agent/dist/core/tools/bash.js
 index 27fe820..68f277f 100644
 --- a/node_modules/@mariozechner/pi-coding-agent/dist/core/tools/bash.js
