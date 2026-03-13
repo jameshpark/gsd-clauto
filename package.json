@@ -76,7 +76,7 @@
     "typescript": "^5.4.0"
   },
   "optionalDependencies": {
-    "fsevents": "~2.3.2"
+    "fsevents": "~2.3.3"
   },
   "overrides": {
     "gaxios": "7.1.4"
