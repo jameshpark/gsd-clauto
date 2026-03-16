@@ -25,8 +25,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`parseContextDependsOn()` destroys unique milestone ID case** — was lowercasing IDs, breaking dependency resolution (#604)
 - **Tool-aware idle detection** — prevents false interruption of long-running tasks in auto-mode (#596)
 - **Remote questions onboarding crash** — extracted `saveRemoteQuestionsConfig` into compiled src/ helper to avoid cross-boundary .ts import (#592)
+- **`showNextAction` crash** — falls back to `select()` when `custom()` returns undefined (#447, #615)
 
 ### Changed
+- Comprehensive update to preferences reference and configuration guide (#614)
 - Auto-mode artifact writes scoped to active milestone worktree, preventing cross-milestone pollution (#590)
 
 ## [2.17.0] - 2026-03-15
