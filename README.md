@@ -1,5 +1,105 @@
 <div align="center">
 
+# GSD-Clauto (Claude Code Fork)
+
+**Fork of [GSD 2](https://github.com/gsd-build/GSD-2) that uses [Claude Code](https://docs.anthropic.com/en/docs/claude-code) as its LLM backend.**
+
+This fork replaces GSD's built-in Pi agent LLM layer with `claude -p` (Claude Code in print mode). GSD's state machine, auto mode, context engineering, git strategy, and all extensions remain unchanged. The only difference is _what executes each unit of work_: instead of calling the Anthropic/OpenAI API directly via the Pi SDK, each unit is dispatched to Claude Code, which brings its own tool implementations (Bash, Read, Write, Edit, Grep, Glob, etc.) and executes autonomously.
+
+</div>
+
+---
+
+## What This Fork Changes
+
+Two files are modified from upstream. Everything else is identical.
+
+**`src/claude-code-stream.ts`** (new) -- A `StreamFn` adapter that:
+- Spawns `claude -p --output-format stream-json --verbose --dangerously-skip-permissions --no-session-persistence`
+- Pipes the prompt via stdin (avoids OS argument length limits for large GSD auto prompts)
+- Forwards `--model` from GSD's per-unit model selection
+- Passes GSD's system prompt via `--append-system-prompt`
+- Parses NDJSON events as they arrive, streaming text updates back to the TUI in real-time
+- Returns an `AssistantMessageEventStream` with no tool calls, so the Pi agent loop exits cleanly and the auto state machine proceeds
+
+**`src/cli.ts`** (4 lines added) -- After the interactive-mode `createAgentSession()` call, swaps `session.agent.streamFn` to the Claude Code adapter:
+```typescript
+{
+  const { createClaudeCodeStreamFn } = await import('./claude-code-stream.js')
+  session.agent.streamFn = createClaudeCodeStreamFn()
+}
+```
+
+### Why this works
+
+- `Agent.streamFn` is a public mutable property, read fresh on every LLM call
+- `AgentSession.agent` is the same instance for the entire session lifetime
+- `newSession()` (called per auto-mode unit) only resets messages, never replaces the Agent or its `streamFn`
+- Claude Code executes tools internally and returns final text; the Pi agent loop sees "no tool calls" and exits, letting auto mode advance
+
+### What is NOT changed
+
+- The auto state machine (`auto.ts`)
+- Session lifecycle (`newSession()`, context resets)
+- Post-hooks (auto-commit, doctor, state rebuild)
+- Prompt construction (context pre-loading, file inlining)
+- Git strategy (worktrees, squash merge)
+- All extensions, agents, commands, and TUI
+
+---
+
+## Building
+
+```bash
+# Install dependencies
+npm install
+
+# Build everything (workspace packages + gsd)
+npm run build
+
+# Run from the built dist
+node dist/loader.js
+```
+
+The build compiles workspace packages first (`pi-ai`, `pi-agent-core`, `pi-coding-agent`, etc.) then compiles `src/` to `dist/`.
+
+### Prerequisites
+
+- Node.js >= 20.6.0 (22+ recommended)
+- `claude` CLI installed and authenticated (Claude Code)
+- Git
+
+---
+
+## Syncing with Upstream
+
+This fork is designed for easy upstream merges. Only `src/cli.ts` is modified from upstream (4 lines added); `src/claude-code-stream.ts` is a new file that won't conflict.
+
+```bash
+# One-time: add upstream remote
+git remote add upstream https://github.com/gsd-build/GSD-2.git
+
+# Fetch and merge upstream changes
+git fetch upstream
+git checkout main
+git merge upstream/main
+
+# Rebuild after merge
+npm install
+npm run build
+```
+
+If there's a conflict in `src/cli.ts`, it will be in the interactive-mode session setup area (around the `createAgentSession` block). The fix is to re-add the 4-line `streamFn` swap after the `extensionsResult.errors` check and before the scoped models restoration.
+
+---
+
+## Original README
+
+<details>
+<summary>Click to expand the original GSD 2 README</summary>
+
+<div align="center">
+
 # GSD 2
 
 **The evolution of [Get Shit Done](https://github.com/gsd-build/get-shit-done) — now a real coding agent.**
@@ -577,3 +677,5 @@ Use expensive models where quality matters (planning, complex execution) and che
 **`npm install -g gsd-pi && gsd`**
 
 </div>
+
+</details>

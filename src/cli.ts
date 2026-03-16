@@ -373,6 +373,11 @@ if (extensionsResult.errors.length > 0) {
   }
 }
 
+{
+  const { createClaudeCodeStreamFn } = await import('./claude-code-stream.js')
+  session.agent.streamFn = createClaudeCodeStreamFn()
+}
+
 // Restore scoped models from settings on startup.
 // The upstream InteractiveMode reads enabledModels from settings when /scoped-models is opened,
 // but doesn't apply them to the session at startup — so Ctrl+P cycles all models instead of

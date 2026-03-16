@@ -90,7 +90,7 @@ const { Module } = await import('module');
 // GSD_VERSION — expose package version so extensions can display it
 try {
   const gsdPkg = JSON.parse(readFileSync(join(gsdRoot, 'package.json'), 'utf-8'))
-  process.env.GSD_VERSION = gsdPkg.version || '0.0.0'
+  process.env.GSD_VERSION = (gsdPkg.version || '0.0.0') + ' ** clauto **'
 } catch {
   process.env.GSD_VERSION = '0.0.0'
 }
