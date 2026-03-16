@@ -6,6 +6,39 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.22.0] - 2026-03-16
+
+### Added
+- **`/gsd forensics`** — post-mortem investigation of auto-mode failures with structured root-cause analysis
+- **Claude marketplace import** — import Claude marketplace plugins as namespaced GSD components
+- **MCP server mode** — run GSD as an MCP server with `--mode mcp`
+- **`/review` skill** — code review with diff-aware context
+- **`/test` skill** — test generation and execution
+- **`/lint` skill** — linting integration
+- **GitHub API client** — diff-aware context injection and tiktoken-based token counting
+- **File watcher** — chokidar-based file watching for live updates
+- **`git.isolation: "none"`** — disable worktree isolation for projects that don't need it
+- **E2E smoke tests** — end-to-end test suite for extension integration
+- **Subcommand help** — inline help text for all GSD subcommands
+
+### Fixed
+- `verificationBudget` passed correctly to execute-task prompt template
+- Background shell worktree cwd detection normalized to prevent stale paths
+- Skill loading made an active directive in auto-mode units
+- Auto-worktree validated as real git worktree before use
+- MCP server discovery from project-root `.mcp.json`
+- Command injection surface eliminated in diff-context; file-watcher path resolution hardened
+- Thinking level clamped to `low` for gpt-5.x models
+- `completedAt` coerced to String in visualizer changelog sort
+- Warp terminal added to unsupported Ctrl+Alt shortcut list
+- Fractional slice IDs (e.g. S03.5) supported in roadmap parser
+- `executorContextConstraints` provided to plan-slice template
+- Worktree state synced to project root after each unit
+- Initial state derived from worktree when one exists
+- Hardware cursor auto-enabled in Warp terminal
+- CSI 3J scrollback clear removed from TUI full redraws
+- Worktree edge cases — `resolveGitDir`, `captureIntegrationBranch` guard, doctor path
+
 ## [2.21.0] - 2026-03-16
 
 ### Added
@@ -828,7 +861,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - License updated to MIT
 
-[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.21.0...HEAD
+[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.22.0...HEAD
 [2.21.0]: https://github.com/gsd-build/gsd-2/compare/v2.20.0...v2.21.0
 [2.19.0]: https://github.com/gsd-build/gsd-2/compare/v2.18.0...v2.19.0
 [2.18.0]: https://github.com/gsd-build/gsd-2/compare/v2.17.0...v2.18.0
@@ -867,6 +900,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [2.7.0]: https://github.com/gsd-build/gsd-2/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/gsd-build/gsd-2/compare/v2.5.1...v2.6.0
 [2.20.0]: https://github.com/gsd-build/gsd-2/releases/tag/v2.20.0
+[2.22.0]: https://github.com/gsd-build/gsd-2/releases/tag/v2.22.0
 [2.5.1]: https://github.com/gsd-build/gsd-2/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/gsd-build/gsd-2/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/gsd-build/gsd-2/compare/v2.3.11...v2.4.0

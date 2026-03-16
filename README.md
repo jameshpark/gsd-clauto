@@ -242,6 +242,8 @@ On first run, GSD launches a branded setup wizard that walks you through LLM pro
 | `/gsd migrate`          | Migrate a v1 `.planning` directory to `.gsd` format             |
 | `/gsd help`             | Categorized command reference for all GSD subcommands           |
 | `/gsd mode`             | Switch workflow mode (solo/team) with coordinated defaults      |
+| `/gsd forensics`        | Post-mortem investigation of auto-mode failures                 |
+| `/gsd cleanup`          | Archive phase directories from completed milestones             |
 | `/gsd doctor`           | Runtime health checks with auto-fix for common issues           |
 | `/worktree` (`/wt`)     | Git worktree lifecycle — create, switch, merge, remove          |
 | `/voice`                | Toggle real-time speech-to-text (macOS, Linux)                  |
@@ -357,6 +359,7 @@ unique_milestone_ids: true
 | `skill_rules`          | Situational rules for skill routing                                                                   |
 | `skill_staleness_days` | Skills unused for N days get deprioritized (default: 60, 0 = disabled)                                |
 | `unique_milestone_ids` | Uses unique milestone names to avoid clashes when working in teams of people                          |
+| `git.isolation`        | `worktree` (default) or `none` — disable worktree isolation for projects that don't need it           |
 
 ### Agent Instructions
 
