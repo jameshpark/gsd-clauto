@@ -4,7 +4,6 @@
 
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
-import { sep } from "node:path";
 
 // ── Windows VT Input Restoration ────────────────────────────────────────────
 // Child processes (esp. Git Bash / MSYS2) can strip the ENABLE_VIRTUAL_TERMINAL_INPUT
@@ -61,8 +60,7 @@ export function resolveBgShellPersistenceCwd(
 	liveCwd = process.cwd(),
 	pathExists: (path: string) => boolean = existsSync,
 ): string {
-	const worktreeMarker = `${sep}.gsd${sep}worktrees${sep}`;
-	const cachedIsAutoWorktree = cachedCwd.includes(worktreeMarker);
+	const cachedIsAutoWorktree = /(?:^|[\\/])\.gsd[\\/]worktrees[\\/]/.test(cachedCwd);
 	if (!cachedIsAutoWorktree) return cachedCwd;
 	if (cachedCwd === liveCwd && pathExists(cachedCwd)) return cachedCwd;
 	if (!pathExists(cachedCwd)) return liveCwd;
