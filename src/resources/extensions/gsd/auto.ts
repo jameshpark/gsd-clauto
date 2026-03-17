@@ -211,6 +211,11 @@ const MAX_LIFETIME_DISPATCHES = 6;
 /** Tracks recovery attempt count per unit for backoff and diagnostics. */
 const unitRecoveryCount = new Map<string, number>();
 
+/** Track consecutive skips per unit — catches infinite skip loops where deriveState
+ *  keeps returning the same already-completed unit. Reset on any real dispatch. */
+const unitConsecutiveSkips = new Map<string, number>();
+const MAX_CONSECUTIVE_SKIPS = 3;
+
 /** Persisted completed-unit keys — survives restarts. Loaded from .gsd/completed-units.json. */
 const completedKeySet = new Set<string>();
 
@@ -624,6 +629,7 @@ export async function stopAuto(ctx?: ExtensionContext, pi?: ExtensionAPI): Promi
   stepMode = false;
   unitDispatchCount.clear();
   unitRecoveryCount.clear();
+  unitConsecutiveSkips.clear();
   inFlightTools.clear();
   lastBudgetAlertLevel = 0;
   unitLifetimeDispatches.clear();
@@ -714,6 +720,7 @@ export async function startAuto(
     basePath = base;
     unitDispatchCount.clear();
     unitLifetimeDispatches.clear();
+    unitConsecutiveSkips.clear();
     // Re-initialize metrics in case ledger was lost during pause
     if (!getLedger()) initMetrics(base);
     // Ensure milestone ID is set on git service for integration branch resolution
@@ -995,6 +1002,7 @@ export async function startAuto(
   basePath = base;
   unitDispatchCount.clear();
   unitRecoveryCount.clear();
+  unitConsecutiveSkips.clear();
   lastBudgetAlertLevel = 0;
   unitLifetimeDispatches.clear();
   completedKeySet.clear();
@@ -1927,6 +1935,7 @@ async function dispatchNextUnit(
     // Reset stuck detection for new milestone
     unitDispatchCount.clear();
     unitRecoveryCount.clear();
+  unitConsecutiveSkips.clear();
     unitLifetimeDispatches.clear();
     // Clear completed-units.json for the finished milestone
     try {
@@ -2294,6 +2303,26 @@ async function dispatchNextUnit(
     // Cross-validate: does the expected artifact actually exist?
     const artifactExists = verifyExpectedArtifact(unitType, unitId, basePath);
     if (artifactExists) {
+      // Guard against infinite skip loops: if deriveState keeps returning the
+      // same completed unit, consecutive skips will trip this breaker. Evict the
+      // key so the next dispatch forces full reconciliation instead of looping.
+      const skipCount = (unitConsecutiveSkips.get(idempotencyKey) ?? 0) + 1;
+      unitConsecutiveSkips.set(idempotencyKey, skipCount);
+      if (skipCount > MAX_CONSECUTIVE_SKIPS) {
+        unitConsecutiveSkips.delete(idempotencyKey);
+        completedKeySet.delete(idempotencyKey);
+        removePersistedKey(basePath, idempotencyKey);
+        invalidateStateCache();
+        ctx.ui.notify(
+          `Skip loop detected: ${unitType} ${unitId} skipped ${skipCount} times without advancing. Evicting completion record and forcing reconciliation.`,
+          "warning",
+        );
+        _skipDepth++;
+        await new Promise(r => setTimeout(r, 50));
+        await dispatchNextUnit(ctx, pi);
+        _skipDepth = Math.max(0, _skipDepth - 1);
+        return;
+      }
       ctx.ui.notify(
         `Skipping ${unitType} ${unitId} — already completed in a prior session. Advancing.`,
         "info",
@@ -2323,6 +2352,24 @@ async function dispatchNextUnit(
     persistCompletedKey(basePath, idempotencyKey);
     completedKeySet.add(idempotencyKey);
     invalidateStateCache();
+    // Same consecutive-skip guard as the idempotency path above.
+    const skipCount2 = (unitConsecutiveSkips.get(idempotencyKey) ?? 0) + 1;
+    unitConsecutiveSkips.set(idempotencyKey, skipCount2);
+    if (skipCount2 > MAX_CONSECUTIVE_SKIPS) {
+      unitConsecutiveSkips.delete(idempotencyKey);
+      completedKeySet.delete(idempotencyKey);
+      removePersistedKey(basePath, idempotencyKey);
+      invalidateStateCache();
+      ctx.ui.notify(
+        `Skip loop detected: ${unitType} ${unitId} skipped ${skipCount2} times without advancing. Evicting completion record and forcing reconciliation.`,
+        "warning",
+      );
+      _skipDepth++;
+      await new Promise(r => setTimeout(r, 50));
+      await dispatchNextUnit(ctx, pi);
+      _skipDepth = Math.max(0, _skipDepth - 1);
+      return;
+    }
     ctx.ui.notify(
       `Skipping ${unitType} ${unitId} — artifact exists but completion key was missing. Repaired and advancing.`,
       "info",
@@ -2338,6 +2385,8 @@ async function dispatchNextUnit(
   // Pattern A→B→A→B would reset retryCount every time; this map catches it.
   const dispatchKey = `${unitType}/${unitId}`;
   const prevCount = unitDispatchCount.get(dispatchKey) ?? 0;
+  // Real dispatch reached — clear the consecutive-skip counter for this unit.
+  unitConsecutiveSkips.delete(dispatchKey);
 
   debugLog("dispatch-unit", {
     type: unitType,
@@ -3282,6 +3331,14 @@ export {
   skipExecuteTask,
   buildLoopRemediationSteps,
 } from "./auto-recovery.js";
+
+/**
+ * Test-only: expose skip-loop state for unit tests.
+ * Not part of the public API.
+ */
+export function _getUnitConsecutiveSkips(): Map<string, number> { return unitConsecutiveSkips; }
+export function _resetUnitConsecutiveSkips(): void { unitConsecutiveSkips.clear(); }
+export { MAX_CONSECUTIVE_SKIPS };
 
 /**
  * Dispatch a hook unit directly, bypassing normal pre-dispatch hooks.
