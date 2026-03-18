@@ -11,6 +11,7 @@
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
 
 import {
   detectWorktreeName,
@@ -29,7 +30,7 @@ import {
   nativeUpdateRef,
   nativeAddPaths,
 } from "./native-git-bridge.js";
-import { GSDError, GSD_MERGE_CONFLICT } from "./errors.js";
+import { GSDError, GSD_MERGE_CONFLICT, GSD_GIT_ERROR } from "./errors.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -53,12 +54,28 @@ export interface GitPreferences {
    *  Default: true (planning docs are tracked in git).
    */
   commit_docs?: boolean;
+  /** When false, GSD will not modify .gitignore at all — no baseline patterns
+   *  are added and no self-healing occurs. Use this if you manage your own
+   *  .gitignore and don't want GSD touching it.
+   *  Default: true (GSD ensures baseline patterns are present).
+   */
+  manage_gitignore?: boolean;
   /** Script to run after a worktree is created (#597).
    *  Receives SOURCE_DIR and WORKTREE_DIR as environment variables.
    *  Can be an absolute path or relative to the project root.
    *  Failure is non-fatal — logged as a warning.
    */
   worktree_post_create?: string;
+  /** When true, automatically create a pull request after milestone completion.
+   *  The PR targets `pr_target_branch` (default: the main branch).
+   *  Requires `push_branches: true` and a configured remote.
+   *  Default: false.
+   */
+  auto_pr?: boolean;
+  /** Target branch for auto-created PRs (e.g. "develop", "qa").
+   *  Default: the main branch (from `main_branch` or auto-detected).
+   */
+  pr_target_branch?: string;
 }
 
 export const VALID_BRANCH_NAME = /^[a-zA-Z0-9_\-\/.]+$/;
@@ -66,6 +83,50 @@ export const VALID_BRANCH_NAME = /^[a-zA-Z0-9_\-\/.]+$/;
 export interface CommitOptions {
   message: string;
   allowEmpty?: boolean;
+}
+
+// ─── Meaningful Commit Message Generation ───────────────────────────────────
+
+/** Context for generating a meaningful commit message from task execution results. */
+export interface TaskCommitContext {
+  taskId: string;
+  taskTitle: string;
+  /** The one-liner from the task summary (e.g. "Added retry-aware worker status logging") */
+  oneLiner?: string;
+  /** Files modified by this task (from task summary frontmatter) */
+  keyFiles?: string[];
+}
+
+/**
+ * Build a meaningful conventional commit message from task execution context.
+ * Format: `{type}({sliceId}/{taskId}): {description}`
+ *
+ * The description is the task summary one-liner if available (it describes
+ * what was actually built), falling back to the task title (what was planned).
+ */
+export function buildTaskCommitMessage(ctx: TaskCommitContext): string {
+  const scope = ctx.taskId; // e.g. "S01/T02" or just "T02"
+  const description = ctx.oneLiner || ctx.taskTitle;
+  const type = inferCommitType(ctx.taskTitle, ctx.oneLiner);
+
+  // Truncate description to ~72 chars for subject line
+  const maxDescLen = 68 - type.length - scope.length;
+  const truncated = description.length > maxDescLen
+    ? description.slice(0, maxDescLen - 1).trimEnd() + "…"
+    : description;
+
+  const subject = `${type}(${scope}): ${truncated}`;
+
+  // Build body with key files if available
+  if (ctx.keyFiles && ctx.keyFiles.length > 0) {
+    const fileLines = ctx.keyFiles
+      .slice(0, 8) // cap at 8 files to keep commit concise
+      .map(f => `- ${f}`)
+      .join("\n");
+    return `${subject}\n\n${fileLines}`;
+  }
+
+  return subject;
 }
 
 /**
@@ -204,13 +265,6 @@ export function writeIntegrationBranch(basePath: string, milestoneId: string, br
 
 // ─── Git Helper ────────────────────────────────────────────────────────────
 
-/** Env overlay that suppresses interactive git credential prompts and git-svn noise. */
-const GIT_NO_PROMPT_ENV = {
-  ...process.env,
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_ASKPASS: "",
-  GIT_SVN_ID: "",
-};
 
 /**
  * Strip git-svn noise from error messages.
@@ -242,7 +296,7 @@ export function runGit(basePath: string, args: string[], options: { allowFailure
   } catch (error) {
     if (options.allowFailure) return "";
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`git ${args.join(" ")} failed in ${basePath}: ${filterGitSvnNoise(message)}`);
+    throw new GSDError(GSD_GIT_ERROR, `git ${args.join(" ")} failed in ${basePath}: ${filterGitSvnNoise(message)}`);
   }
 }
 
@@ -253,18 +307,14 @@ export function runGit(basePath: string, args: string[], options: { allowFailure
  * Each entry: [keywords[], commitType]
  */
 const COMMIT_TYPE_RULES: [string[], string][] = [
-  [["fix", "bug", "patch", "hotfix"], "fix"],
+  [["fix", "fixed", "fixes", "bug", "patch", "hotfix", "repair", "correct"], "fix"],
   [["refactor", "restructure", "reorganize"], "refactor"],
-  [["doc", "docs", "documentation"], "docs"],
-  [["test", "tests", "testing"], "test"],
-  [["chore", "cleanup", "clean up", "archive", "remove", "delete"], "chore"],
+  [["doc", "docs", "documentation", "readme", "changelog"], "docs"],
+  [["test", "tests", "testing", "spec", "coverage"], "test"],
+  [["perf", "performance", "optimize", "speed", "cache"], "perf"],
+  [["chore", "cleanup", "clean up", "dependencies", "deps", "bump", "config", "ci", "archive", "remove", "delete"], "chore"],
 ];
 
-/**
- * Infer a conventional commit type from a slice title.
- * Uses case-insensitive word-boundary matching against known keywords.
- * Returns "feat" when no keywords match.
- */
 // ─── GitServiceImpl ────────────────────────────────────────────────────
 
 export class GitServiceImpl {
@@ -356,11 +406,22 @@ export class GitServiceImpl {
   }
 
   /**
-   * Auto-commit dirty working tree with a conventional chore message.
+   * Auto-commit dirty working tree.
+   *
+   * When `taskContext` is provided, generates a meaningful conventional commit
+   * message from the task execution results (one-liner, title, inferred type).
+   * Falls back to a generic `chore()` message when no context is available
+   * (e.g. pre-switch commits, stop commits, state rebuild commits).
+   *
    * Returns the commit message on success, or null if nothing to commit.
    * @param extraExclusions Additional paths to exclude from staging (e.g. [".gsd/"] for pre-switch commits).
    */
-  autoCommit(unitType: string, unitId: string, extraExclusions: readonly string[] = []): string | null {
+  autoCommit(
+    unitType: string,
+    unitId: string,
+    extraExclusions: readonly string[] = [],
+    taskContext?: TaskCommitContext,
+  ): string | null {
     // Quick check: is there anything dirty at all?
     // Native path uses libgit2 (single syscall), fallback spawns git.
     if (!nativeHasChanges(this.basePath)) return null;
@@ -371,7 +432,9 @@ export class GitServiceImpl {
     // (all changes might have been runtime files that got excluded)
     if (!nativeHasStagedChanges(this.basePath)) return null;
 
-    const message = `chore(${unitId}): auto-commit after ${unitType}`;
+    const message = taskContext
+      ? buildTaskCommitMessage(taskContext)
+      : `chore(${unitId}): auto-commit after ${unitType}`;
     nativeCommit(this.basePath, message, { allowEmpty: false });
     return message;
   }
@@ -497,8 +560,15 @@ export class GitServiceImpl {
 
 // ─── Commit Type Inference ─────────────────────────────────────────────────
 
-export function inferCommitType(sliceTitle: string): string {
-  const lower = sliceTitle.toLowerCase();
+/**
+ * Infer a conventional commit type from a title (and optional one-liner).
+ * Uses case-insensitive word-boundary matching against known keywords.
+ * Returns "feat" when no keywords match.
+ *
+ * Used for both slice squash-merge titles and task commit messages.
+ */
+export function inferCommitType(title: string, oneLiner?: string): string {
+  const lower = `${title} ${oneLiner || ""}`.toLowerCase();
 
   for (const [keywords, commitType] of COMMIT_TYPE_RULES) {
     for (const keyword of keywords) {

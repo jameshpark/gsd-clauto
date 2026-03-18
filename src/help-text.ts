@@ -18,6 +18,62 @@ const SUBCOMMAND_HELP: Record<string, string> = {
     '',
     'Equivalent to: npm install -g gsd-pi@latest',
   ].join('\n'),
+
+  sessions: [
+    'Usage: gsd sessions',
+    '',
+    'List all saved sessions for the current directory and interactively',
+    'pick one to resume. Shows date, message count, and a preview of the',
+    'first message for each session.',
+    '',
+    'Sessions are stored per-directory, so you only see sessions that were',
+    'started from the current working directory.',
+    '',
+    'Compare with --continue (-c) which always resumes the most recent session.',
+  ].join('\n'),
+
+  headless: [
+    'Usage: gsd headless [flags] [command] [args...]',
+    '',
+    'Run /gsd commands without the TUI. Default command: auto',
+    '',
+    'Flags:',
+    '  --timeout N          Overall timeout in ms (default: 300000)',
+    '  --json               JSONL event stream to stdout',
+    '  --model ID           Override model',
+    '  --supervised           Forward interactive UI requests to orchestrator via stdout/stdin',
+    '  --response-timeout N   Timeout (ms) for orchestrator response (default: 30000)',
+    '  --answers <path>       Pre-supply answers and secrets (JSON file)',
+    '  --events <types>       Filter JSONL output to specific event types (comma-separated)',
+    '',
+    'Commands:',
+    '  auto                 Run all queued units continuously (default)',
+    '  next                 Run one unit',
+    '  status               Show progress dashboard',
+    '  new-milestone        Create a milestone from a specification document',
+    '  query                JSON snapshot: state + next dispatch + costs (no LLM)',
+    '',
+    'new-milestone flags:',
+    '  --context <path>     Path to spec/PRD file (use \'-\' for stdin)',
+    '  --context-text <txt> Inline specification text',
+    '  --auto               Start auto-mode after milestone creation',
+    '  --verbose            Show tool calls in progress output',
+    '',
+    'Examples:',
+    '  gsd headless                                    Run /gsd auto',
+    '  gsd headless next                               Run one unit',
+    '  gsd headless --json status                      Machine-readable status',
+    '  gsd headless --timeout 60000                    With 1-minute timeout',
+    '  gsd headless new-milestone --context spec.md    Create milestone from file',
+    '  cat spec.md | gsd headless new-milestone --context -   From stdin',
+    '  gsd headless new-milestone --context spec.md --auto    Create + auto-execute',
+    '  gsd headless --supervised auto                     Supervised orchestrator mode',
+    '  gsd headless --answers answers.json auto              With pre-supplied answers',
+    '  gsd headless --events agent_end,extension_ui_request auto   Filtered event stream',
+    '  gsd headless query                              Instant JSON state snapshot',
+    '',
+    'Exit codes: 0 = complete, 1 = error/timeout, 2 = blocked',
+  ].join('\n'),
 }
 
 export function printHelp(version: string): void {
@@ -37,6 +93,8 @@ export function printHelp(version: string): void {
   process.stdout.write('\nSubcommands:\n')
   process.stdout.write('  config                   Re-run the setup wizard\n')
   process.stdout.write('  update                   Update GSD to the latest version\n')
+  process.stdout.write('  sessions                 List and resume a past session\n')
+  process.stdout.write('  headless [cmd] [args]    Run /gsd commands without TUI (default: auto)\n')
   process.stdout.write('\nRun gsd <subcommand> --help for subcommand-specific help.\n')
 }
 

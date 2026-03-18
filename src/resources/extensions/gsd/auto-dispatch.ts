@@ -14,9 +14,11 @@ import type { GSDPreferences } from "./preferences.js";
 import type { UatType } from "./files.js";
 import { loadFile, extractUatType, loadActiveOverrides } from "./files.js";
 import {
-  resolveMilestoneFile, resolveSliceFile,
-  relSliceFile,
+  resolveMilestoneFile, resolveMilestonePath, resolveSliceFile, resolveTaskFile,
+  relSliceFile, buildMilestoneFileName,
 } from "./paths.js";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   buildResearchMilestonePrompt,
   buildPlanMilestonePrompt,
@@ -25,6 +27,7 @@ import {
   buildExecuteTaskPrompt,
   buildCompleteSlicePrompt,
   buildCompleteMilestonePrompt,
+  buildValidateMilestonePrompt,
   buildReplanSlicePrompt,
   buildRunUatPrompt,
   buildReassessRoadmapPrompt,
@@ -239,6 +242,32 @@ const DISPATCH_RULES: DispatchRule[] = [
     },
   },
   {
+    name: "executing → execute-task (recover missing task plan → plan-slice)",
+    match: async ({ state, mid, midTitle, basePath }) => {
+      if (state.phase !== "executing" || !state.activeTask) return null;
+      const sid = state.activeSlice!.id;
+      const sTitle = state.activeSlice!.title;
+      const tid = state.activeTask.id;
+
+      // Guard: if the slice plan exists but the individual task plan files are
+      // missing, the planner created S##-PLAN.md with task entries but never
+      // wrote the tasks/ directory files. Dispatch plan-slice to regenerate
+      // them rather than hard-stopping — fixes the infinite-loop described in
+      // issue #909.
+      const taskPlanPath = resolveTaskFile(basePath, mid, sid, tid, "PLAN");
+      if (!taskPlanPath || !existsSync(taskPlanPath)) {
+        return {
+          action: "dispatch",
+          unitType: "plan-slice",
+          unitId: `${mid}/${sid}`,
+          prompt: await buildPlanSlicePrompt(mid, midTitle, sid, sTitle, basePath),
+        };
+      }
+
+      return null;
+    },
+  },
+  {
     name: "executing → execute-task",
     match: async ({ state, mid, basePath }) => {
       if (state.phase !== "executing" || !state.activeTask) return null;
@@ -246,11 +275,44 @@ const DISPATCH_RULES: DispatchRule[] = [
       const sTitle = state.activeSlice!.title;
       const tid = state.activeTask.id;
       const tTitle = state.activeTask.title;
+
       return {
         action: "dispatch",
         unitType: "execute-task",
         unitId: `${mid}/${sid}/${tid}`,
         prompt: await buildExecuteTaskPrompt(mid, sid, sTitle, tid, tTitle, basePath),
+      };
+    },
+  },
+  {
+    name: "validating-milestone → validate-milestone",
+    match: async ({ state, mid, midTitle, basePath, prefs }) => {
+      if (state.phase !== "validating-milestone") return null;
+      // Skip preference: write a minimal pass-through VALIDATION file
+      if (prefs?.phases?.skip_milestone_validation) {
+        const mDir = resolveMilestonePath(basePath, mid);
+        if (mDir) {
+          if (!existsSync(mDir)) mkdirSync(mDir, { recursive: true });
+          const validationPath = join(mDir, buildMilestoneFileName(mid, "VALIDATION"));
+          const content = [
+            "---",
+            "verdict: pass",
+            "remediation_round: 0",
+            "---",
+            "",
+            "# Milestone Validation (skipped by preference)",
+            "",
+            "Milestone validation was skipped via `skip_milestone_validation` preference.",
+          ].join("\n");
+          writeFileSync(validationPath, content, "utf-8");
+        }
+        return { action: "skip" };
+      }
+      return {
+        action: "dispatch",
+        unitType: "validate-milestone",
+        unitId: mid,
+        prompt: await buildValidateMilestonePrompt(mid, midTitle, basePath),
       };
     },
   },

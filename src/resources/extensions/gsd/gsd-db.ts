@@ -9,6 +9,7 @@ import { createRequire } from 'node:module';
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Decision, Requirement } from './types.js';
+import { GSDError, GSD_STALE_STATE } from './errors.js';
 
 // Create a require function for loading native modules in ESM context
 const _require = createRequire(import.meta.url);
@@ -161,7 +162,7 @@ function openRawDb(path: string): unknown {
 
 // ─── Schema ────────────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 function initSchema(db: DbAdapter, fileBacked: boolean): void {
   // WAL mode for file-backed databases (must be outside transaction)
@@ -221,9 +222,36 @@ function initSchema(db: DbAdapter, fileBacked: boolean): void {
       )
     `);
 
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS memories (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        category TEXT NOT NULL,
+        content TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 0.8,
+        source_unit_type TEXT,
+        source_unit_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        superseded_by TEXT DEFAULT NULL,
+        hit_count INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_processed_units (
+        unit_key TEXT PRIMARY KEY,
+        activity_file TEXT,
+        processed_at TEXT NOT NULL
+      )
+    `);
+
+    db.exec('CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(superseded_by)');
+
     // Views — DROP + CREATE since CREATE VIEW IF NOT EXISTS doesn't update definitions
     db.exec(`CREATE VIEW IF NOT EXISTS active_decisions AS SELECT * FROM decisions WHERE superseded_by IS NULL`);
     db.exec(`CREATE VIEW IF NOT EXISTS active_requirements AS SELECT * FROM requirements WHERE superseded_by IS NULL`);
+    db.exec(`CREATE VIEW IF NOT EXISTS active_memories AS SELECT * FROM memories WHERE superseded_by IS NULL`);
 
     // Insert schema version if not already present
     const existing = db.prepare('SELECT count(*) as cnt FROM schema_version').get();
@@ -274,6 +302,41 @@ function migrateSchema(db: DbAdapter): void {
       );
     }
 
+    // v2 → v3: add memories + memory_processed_units tables
+    if (currentVersion < 3) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS memories (
+          seq INTEGER PRIMARY KEY AUTOINCREMENT,
+          id TEXT NOT NULL UNIQUE,
+          category TEXT NOT NULL,
+          content TEXT NOT NULL,
+          confidence REAL NOT NULL DEFAULT 0.8,
+          source_unit_type TEXT,
+          source_unit_id TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          superseded_by TEXT DEFAULT NULL,
+          hit_count INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS memory_processed_units (
+          unit_key TEXT PRIMARY KEY,
+          activity_file TEXT,
+          processed_at TEXT NOT NULL
+        )
+      `);
+
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(superseded_by)');
+      db.exec('DROP VIEW IF EXISTS active_memories');
+      db.exec('CREATE VIEW active_memories AS SELECT * FROM memories WHERE superseded_by IS NULL');
+
+      db.prepare('INSERT INTO schema_version (version, applied_at) VALUES (:version, :applied_at)').run(
+        { ':version': 3, ':applied_at': new Date().toISOString() },
+      );
+    }
+
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
@@ -285,6 +348,8 @@ function migrateSchema(db: DbAdapter): void {
 
 let currentDb: DbAdapter | null = null;
 let currentPath: string | null = null;
+/** PID that opened the current connection — used for diagnostic logging. */
+let currentPid: number = 0;
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
@@ -332,6 +397,7 @@ export function openDatabase(path: string): boolean {
 
   currentDb = adapter;
   currentPath = path;
+  currentPid = process.pid;
   return true;
 }
 
@@ -347,6 +413,7 @@ export function closeDatabase(): void {
     }
     currentDb = null;
     currentPath = null;
+    currentPid = 0;
   }
 }
 
@@ -354,7 +421,7 @@ export function closeDatabase(): void {
  * Runs a function inside a transaction. Rolls back on error.
  */
 export function transaction<T>(fn: () => T): T {
-  if (!currentDb) throw new Error('gsd-db: No database open');
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, 'gsd-db: No database open');
   currentDb.exec('BEGIN');
   try {
     const result = fn();
@@ -372,7 +439,7 @@ export function transaction<T>(fn: () => T): T {
  * Insert a decision. The `seq` field is auto-generated.
  */
 export function insertDecision(d: Omit<Decision, 'seq'>): void {
-  if (!currentDb) throw new Error('gsd-db: No database open');
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, 'gsd-db: No database open');
   currentDb.prepare(
     `INSERT INTO decisions (id, when_context, scope, decision, choice, rationale, revisable, superseded_by)
      VALUES (:id, :when_context, :scope, :decision, :choice, :rationale, :revisable, :superseded_by)`,
@@ -433,7 +500,7 @@ export function getActiveDecisions(): Decision[] {
  * Insert a requirement.
  */
 export function insertRequirement(r: Requirement): void {
-  if (!currentDb) throw new Error('gsd-db: No database open');
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, 'gsd-db: No database open');
   currentDb.prepare(
     `INSERT INTO requirements (id, class, status, description, why, source, primary_owner, supporting_slices, validation, notes, full_content, superseded_by)
      VALUES (:id, :class, :status, :description, :why, :source, :primary_owner, :supporting_slices, :validation, :notes, :full_content, :superseded_by)`,
@@ -661,6 +728,21 @@ export function reconcileWorktreeDb(
   }
 }
 
+/**
+ * Returns the PID of the process that opened the current DB connection.
+ * Returns 0 if no connection is open.
+ */
+export function getDbOwnerPid(): number {
+  return currentPid;
+}
+
+/**
+ * Returns the path of the currently open database, or null if none.
+ */
+export function getDbPath(): string | null {
+  return currentPath;
+}
+
 // ─── Internal Access (for testing) ─────────────────────────────────────────
 
 /**
@@ -685,7 +767,7 @@ export function _resetProvider(): void {
  * Insert or replace a decision. Uses the `id` UNIQUE constraint for idempotency.
  */
 export function upsertDecision(d: Omit<Decision, 'seq'>): void {
-  if (!currentDb) throw new Error('gsd-db: No database open');
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, 'gsd-db: No database open');
   currentDb.prepare(
     `INSERT OR REPLACE INTO decisions (id, when_context, scope, decision, choice, rationale, revisable, superseded_by)
      VALUES (:id, :when_context, :scope, :decision, :choice, :rationale, :revisable, :superseded_by)`,
@@ -705,7 +787,7 @@ export function upsertDecision(d: Omit<Decision, 'seq'>): void {
  * Insert or replace a requirement. Uses the `id` PK for idempotency.
  */
 export function upsertRequirement(r: Requirement): void {
-  if (!currentDb) throw new Error('gsd-db: No database open');
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, 'gsd-db: No database open');
   currentDb.prepare(
     `INSERT OR REPLACE INTO requirements (id, class, status, description, why, source, primary_owner, supporting_slices, validation, notes, full_content, superseded_by)
      VALUES (:id, :class, :status, :description, :why, :source, :primary_owner, :supporting_slices, :validation, :notes, :full_content, :superseded_by)`,
@@ -728,6 +810,21 @@ export function upsertRequirement(r: Requirement): void {
 /**
  * Insert or replace an artifact. Uses the `path` PK for idempotency.
  */
+/**
+ * Delete all rows from the artifacts table.
+ * The artifacts table is a read cache — clearing it forces the next
+ * deriveState() to fall through to disk reads (native Rust batch parse).
+ * Safe to call when no database is open (no-op).
+ */
+export function clearArtifacts(): void {
+  if (!currentDb) return;
+  try {
+    currentDb.exec('DELETE FROM artifacts');
+  } catch {
+    // Clearing a cache should never be fatal
+  }
+}
+
 export function insertArtifact(a: {
   path: string;
   artifact_type: string;
@@ -736,7 +833,7 @@ export function insertArtifact(a: {
   task_id: string | null;
   full_content: string;
 }): void {
-  if (!currentDb) throw new Error('gsd-db: No database open');
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, 'gsd-db: No database open');
   currentDb.prepare(
     `INSERT OR REPLACE INTO artifacts (path, artifact_type, milestone_id, slice_id, task_id, full_content, imported_at)
      VALUES (:path, :artifact_type, :milestone_id, :slice_id, :task_id, :full_content, :imported_at)`,

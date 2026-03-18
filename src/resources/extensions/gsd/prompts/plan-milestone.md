@@ -16,7 +16,7 @@ A **researcher agent** already explored the codebase and documented findings in 
 
 After you finish, each slice goes through its own research → plan → execute cycle. Slice researchers dive deeper into the specific area. Slice planners decompose into tasks. Executors build each task. Your roadmap sets the strategic frame for all of them.
 
-Narrate your decomposition reasoning — why you're grouping work this way, what risks are driving the order, what verification strategy you're choosing and why.
+Narrate your decomposition reasoning — why you're grouping work this way, what risks are driving the order, what verification strategy you're choosing and why. Use complete sentences rather than planner shorthand or fragmentary notes.
 
 Then:
 1. Use the **Roadmap** output template from the inlined context above
@@ -25,7 +25,6 @@ Then:
 4. Order by risk (high-risk first)
 5. Write `{{outputPath}}` with checkboxes, risk, depends, demo sentences, proof strategy, verification classes, milestone definition of done, **requirement coverage**, and a boundary map. Write success criteria as observable truths, not implementation tasks. If the milestone crosses multiple runtime boundaries, include an explicit final integration slice that proves the assembled system works end-to-end in a real environment
 6. If planning produced structural decisions (e.g. slice ordering rationale, technology choices, scope exclusions), append them to `.gsd/DECISIONS.md` (use the **Decisions** output template from the inlined context above if the file doesn't exist yet)
-7. Update `.gsd/STATE.md`
 
 ## Requirement Mapping Rules
 
@@ -51,6 +50,7 @@ Apply these when decomposing and ordering slices:
 - **Completion must imply capability.** If every slice in this roadmap were completed exactly as written, the milestone's promised outcome should actually work at the proof level claimed. Do not write slices that can all be checked off while the user-visible capability still does not exist.
 - **Don't invent risks.** If the project is straightforward, skip the proof strategy and just ship value in smart order. Not everything has major unknowns.
 - **Ship features, not proofs.** A completed slice should leave the product in a state where the new capability is actually usable through its real interface. A login flow slice ends with a working login page, not a middleware function. An API slice ends with endpoints that return real data from a real store, not hardcoded fixtures. A dashboard slice ends with a real dashboard rendering real data, not a component that renders mock props. If a slice can't ship the real thing yet because a dependency isn't built, it should ship with realistic stubs that are clearly marked for replacement — but the user-facing surface must be real.
+- **Dependency format is comma-separated, never range syntax.** Write `depends:[S01,S02,S03]` — not `depends:[S01-S03]`. Range syntax is not a valid format and permanently blocks the slice.
 - **Ambition matches the milestone.** The number and depth of slices should match the milestone's ambition. A milestone promising "core platform with auth, data model, and primary user loop" should have enough slices to actually deliver all three as working features — not two proof-of-concept slices and a note that "the rest will come in the next milestone." If the milestone's context promises an outcome, the roadmap must deliver it.
 - **Right-size the decomposition.** Match slice count to actual complexity. If the work is small enough to build and verify in one pass, it's one slice — don't split it into three just because you can identify sub-steps. Multiple requirements can share a single slice. Conversely, don't cram genuinely independent capabilities into one slice just to keep the count low. Let the work dictate the structure.
 

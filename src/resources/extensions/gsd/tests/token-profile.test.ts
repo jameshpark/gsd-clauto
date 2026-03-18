@@ -18,9 +18,16 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ─── Source files for structural checks ───────────────────────────────────
+// After decomposition, code lives across multiple modules. Concatenate them
+// so structural string-matching works regardless of which file holds the code.
 
 const dispatchSrc = readFileSync(join(__dirname, "..", "auto-dispatch.ts"), "utf-8");
-const preferencesSrc = readFileSync(join(__dirname, "..", "preferences.ts"), "utf-8");
+const preferencesSrc = [
+  readFileSync(join(__dirname, "..", "preferences.ts"), "utf-8"),
+  readFileSync(join(__dirname, "..", "preferences-types.ts"), "utf-8"),
+  readFileSync(join(__dirname, "..", "preferences-models.ts"), "utf-8"),
+  readFileSync(join(__dirname, "..", "preferences-validation.ts"), "utf-8"),
+].join("\n");
 const typesSrc = readFileSync(join(__dirname, "..", "types.ts"), "utf-8");
 
 // ═══════════════════════════════════════════════════════════════════════════

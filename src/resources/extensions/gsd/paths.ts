@@ -12,11 +12,9 @@
 import { readdirSync, existsSync, Dirent } from "node:fs";
 import { join } from "node:path";
 import { nativeScanGsdTree, type GsdTreeEntry } from "./native-parser-bridge.js";
+import { DIR_CACHE_MAX } from "./constants.js";
 
 // ─── Directory Listing Cache ──────────────────────────────────────────────────
-
-/** Max entries before eviction. Prevents unbounded growth in long sessions (#611). */
-const DIR_CACHE_MAX = 200;
 
 const dirEntryCache = new Map<string, Dirent[]>();
 const dirListCache = new Map<string, string[]>();
@@ -138,14 +136,6 @@ export function clearPathCache(): void {
 }
 
 // ─── Name Builders ─────────────────────────────────────────────────────────
-
-/**
- * Build a directory name from an ID.
- * ("M001") → "M001"
- */
-export function buildDirName(id: string): string {
-  return id;
-}
 
 /**
  * Build a milestone-level file name.

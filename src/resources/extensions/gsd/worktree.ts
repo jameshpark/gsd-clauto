@@ -12,12 +12,14 @@
  * SLICE_BRANCH_RE) remain for backwards compatibility with legacy branches.
  */
 
-import { sep } from "node:path";
+import { existsSync, readFileSync, utimesSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 
-import { GitServiceImpl, writeIntegrationBranch } from "./git-service.js";
+import { GitServiceImpl, writeIntegrationBranch, type TaskCommitContext } from "./git-service.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 
 export { MergeConflictError } from "./git-service.js";
+export type { TaskCommitContext } from "./git-service.js";
 
 // ─── Lazy GitServiceImpl Cache ─────────────────────────────────────────────
 
@@ -162,12 +164,57 @@ export function getCurrentBranch(basePath: string): string {
 
 /**
  * Auto-commit any dirty files in the current working tree.
+ *
+ * When `taskContext` is provided, generates a meaningful conventional commit
+ * message from the task summary (one-liner, inferred type, key files).
+ * Falls back to a generic `chore()` message for non-task commits.
+ *
  * Returns the commit message used, or null if already clean.
  */
 export function autoCommitCurrentBranch(
   basePath: string, unitType: string, unitId: string,
+  taskContext?: TaskCommitContext,
 ): string | null {
-  return getService(basePath).autoCommit(unitType, unitId);
+  return getService(basePath).autoCommit(unitType, unitId, [], taskContext);
 }
 
+// ─── Git HEAD Resolution ────────────────────────────────────────────────────
 
+/**
+ * Resolve the git HEAD file path for a given directory.
+ * Handles both normal repos (.git is a directory) and worktrees (.git is a file
+ * containing a `gitdir:` pointer to the real gitdir).
+ */
+export function resolveGitHeadPath(dir: string): string | null {
+  const gitPath = join(dir, ".git");
+  if (!existsSync(gitPath)) return null;
+
+  try {
+    const content = readFileSync(gitPath, "utf8").trim();
+    if (content.startsWith("gitdir: ")) {
+      const gitDir = resolve(dir, content.slice(8));
+      const headPath = join(gitDir, "HEAD");
+      return existsSync(headPath) ? headPath : null;
+    }
+    const headPath = join(dir, ".git", "HEAD");
+    return existsSync(headPath) ? headPath : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Nudge pi's FooterDataProvider to re-read the git branch after chdir.
+ * Touches HEAD in both old and new cwd to fire the fs watcher.
+ */
+export function nudgeGitBranchCache(previousCwd: string): void {
+  const now = new Date();
+  for (const dir of [previousCwd, process.cwd()]) {
+    try {
+      const headPath = resolveGitHeadPath(dir);
+      if (headPath) utimesSync(headPath, now, now);
+    } catch {
+      // Best-effort
+    }
+  }
+}

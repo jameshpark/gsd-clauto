@@ -13,7 +13,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { showNextAction } from "../../shared/next-action-ui.js";
+import { showNextAction } from "../../shared/mod.js";
 import {
   validatePlanningDirectory,
   parsePlanningDirectory,
@@ -151,7 +151,7 @@ export async function handleMigrate(
   }
 
   // ── Confirmation via showNextAction ────────────────────────────────────────
-  const choice = await showNextAction(ctx as any, {
+  const choice = await showNextAction(ctx, {
     title: "Migration preview",
     summary: lines,
     actions: [
@@ -187,7 +187,7 @@ export async function handleMigrate(
   );
 
   // ── Post-write review offer ────────────────────────────────────────────────
-  const reviewChoice = await showNextAction(ctx as any, {
+  const reviewChoice = await showNextAction(ctx, {
     title: "Migration written",
     summary: [
       `${result.paths.length} files written to .gsd/`,
