@@ -156,13 +156,13 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 	}
 
 	if (model.reasoning) {
+		params.include = ["reasoning.encrypted_content"];
 		if (options?.reasoningEffort || options?.reasoningSummary) {
 			const effort = clampReasoningForModel(model.name, options?.reasoningEffort || "medium") as typeof options.reasoningEffort;
 			params.reasoning = {
 				effort: effort || "medium",
 				summary: options?.reasoningSummary || "auto",
 			};
-			params.include = ["reasoning.encrypted_content"];
 		} else {
 			if (model.name.startsWith("gpt-5")) {
 				// Jesus Christ, see https://community.openai.com/t/need-reasoning-false-option-for-gpt-5/1351588/7
