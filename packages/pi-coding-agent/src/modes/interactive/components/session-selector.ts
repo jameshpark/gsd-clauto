@@ -20,6 +20,12 @@ import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { appKey, appKeyHint, keyHint } from "./keybinding-hints.js";
 import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode } from "./session-selector-search.js";
+import {
+	applyRowHighlight,
+	buildTreePrefix,
+	computeScrollWindow,
+	renderCursor,
+} from "./tree-render-utils.js";
 
 type SessionScope = "current" | "all";
 
@@ -420,11 +426,11 @@ class SessionList implements Component, Focusable {
 		}
 
 		// Calculate visible range with scrolling
-		const startIndex = Math.max(
-			0,
-			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredSessions.length - this.maxVisible),
+		const { startIndex, endIndex } = computeScrollWindow(
+			this.selectedIndex,
+			this.filteredSessions.length,
+			this.maxVisible,
 		);
-		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredSessions.length);
 
 		// Render visible sessions (one line each with tree structure)
 		for (let i = startIndex; i < endIndex; i++) {
@@ -435,7 +441,7 @@ class SessionList implements Component, Focusable {
 			const isCurrent = this.currentSessionFilePath === session.path;
 
 			// Build tree prefix
-			const prefix = this.buildTreePrefix(node);
+			const prefix = this.buildNodeTreePrefix(node);
 
 			// Session display text (name or first message)
 			const hasName = !!session.name;
@@ -454,7 +460,7 @@ class SessionList implements Component, Focusable {
 			}
 
 			// Cursor
-			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
+			const cursor = renderCursor(isSelected);
 
 			// Calculate available width for message
 			const prefixWidth = visibleWidth(prefix);
@@ -483,11 +489,8 @@ class SessionList implements Component, Focusable {
 			const spacing = Math.max(1, width - leftWidth - visibleWidth(rightPart));
 			const styledRight = theme.fg(isConfirmingDelete ? "error" : "dim", rightPart);
 
-			let line = leftPart + " ".repeat(spacing) + styledRight;
-			if (isSelected) {
-				line = theme.bg("selectedBg", line);
-			}
-			lines.push(truncateToWidth(line, width));
+			const line = leftPart + " ".repeat(spacing) + styledRight;
+			lines.push(applyRowHighlight(line, isSelected, width));
 		}
 
 		// Add scroll indicator if needed
@@ -500,14 +503,8 @@ class SessionList implements Component, Focusable {
 		return lines;
 	}
 
-	private buildTreePrefix(node: FlatSessionNode): string {
-		if (node.depth === 0) {
-			return "";
-		}
-
-		const parts = node.ancestorContinues.map((continues) => (continues ? "│  " : "   "));
-		const branch = node.isLast ? "└─ " : "├─ ";
-		return parts.join("") + branch;
+	private buildNodeTreePrefix(node: FlatSessionNode): string {
+		return buildTreePrefix(node.ancestorContinues, node.isLast, node.depth);
 	}
 
 	handleInput(keyData: string): void {
