@@ -10,36 +10,50 @@ All relevant context has been preloaded below. Start working immediately without
 
 {{inlinedContext}}
 
-If a `GSD Skill Preferences` block is present in system context, use it to decide which skills to load and follow during UAT execution, without relaxing required verification or artifact rules.
+{{skillActivation}}
 
 ---
 
 ## UAT Instructions
 
 **UAT file:** `{{uatPath}}`
-**UAT type:** `{{uatType}}`
 **Result file to write:** `{{uatResultPath}}`
+**Detected UAT mode:** `{{uatType}}`
 
-### If UAT type is `artifact-driven`
+You are the UAT runner. Execute every check defined in `{{uatPath}}` as deeply as this mode truthfully allows. Do not collapse live or subjective checks into cheap artifact checks just to get a PASS.
 
-You are the test runner. Execute every check defined in `{{uatPath}}` directly:
+### Automation rules by mode
+
+- `artifact-driven` — verify with shell commands, scripts, file reads, and artifact structure checks.
+- `browser-executable` — use browser tools to navigate to the target URL and verify expected behavior. Capture screenshots as evidence. Record pass/fail with specific assertions.
+- `runtime-executable` — execute the specified command or script. Capture stdout/stderr as evidence. Record pass/fail based on exit code and output.
+- `live-runtime` — exercise the real runtime path. Start or connect to the app/service if needed, use browser/runtime/network checks, and verify observable behavior.
+- `mixed` — run all automatable artifact-driven and live-runtime checks. Separate any remaining human-only checks explicitly.
+- `human-experience` — automate setup, preconditions, screenshots, logs, and objective checks, but do **not** invent subjective PASS results. Mark taste-based, experiential, or purely human-judgment checks as `NEEDS-HUMAN` and use an overall verdict of `PARTIAL` unless every required check was objective and passed.
+
+### Evidence tools
+
+Choose the lightest tool that proves the check honestly:
 
 - Run shell commands with `bash`
 - Run `grep` / `rg` checks against files
-- Run `node` / script invocations
+- Run `node` / other script invocations
 - Read files and verify their contents
 - Check that expected artifacts exist and have correct structure
+- For live/runtime/UI checks, exercise the real flow in the browser when applicable and inspect runtime/network/console state
+- When a check cannot be honestly automated, gather the best objective evidence you can and mark it `NEEDS-HUMAN`
 
 For each check, record:
 - The check description (from the UAT file)
+- The evidence mode used: `artifact`, `runtime`, or `human-follow-up`
 - The command or action taken
 - The actual result observed
-- PASS or FAIL verdict
+- `PASS`, `FAIL`, or `NEEDS-HUMAN`
 
 After running all checks, compute the **overall verdict**:
-- `PASS` — all checks passed
+- `PASS` — all required checks passed and no human-only checks remain
 - `FAIL` — one or more checks failed
-- `PARTIAL` — some checks passed, some failed or were skipped
+- `PARTIAL` — some checks passed, but one or more checks were skipped, inconclusive, or still require human judgment
 
 Write `{{uatResultPath}}` with:
 
@@ -55,9 +69,9 @@ date: <ISO 8601 timestamp>
 
 ## Checks
 
-| Check | Result | Notes |
-|-------|--------|-------|
-| <check description> | PASS / FAIL | <observed output or reason> |
+| Check | Mode | Result | Notes |
+|-------|------|--------|-------|
+| <check description> | artifact / runtime / human-follow-up | PASS / FAIL / NEEDS-HUMAN | <observed output, evidence, or reason> |
 
 ## Overall Verdict
 
@@ -65,45 +79,7 @@ date: <ISO 8601 timestamp>
 
 ## Notes
 
-<any additional context, errors encountered, or follow-up items>
-```
-
-### If UAT type is NOT `artifact-driven` (type is `{{uatType}}`)
-
-This UAT type requires human execution or live-runtime observation that you cannot perform mechanically. Your role is to surface it clearly for review.
-
-Write `{{uatResultPath}}` with:
-
-```markdown
----
-sliceId: {{sliceId}}
-uatType: {{uatType}}
-verdict: surfaced-for-human-review
-date: <ISO 8601 timestamp>
----
-
-# UAT Result — {{sliceId}}
-
-## UAT Type
-
-`{{uatType}}` — requires human execution or live-runtime verification.
-
-## Status
-
-Surfaced for human review. Auto-mode will pause after this unit so the UAT can be performed manually.
-
-## UAT File
-
-See `{{uatPath}}` for the full UAT specification and acceptance criteria.
-
-## Instructions for Human Reviewer
-
-Review `{{uatPath}}`, perform the described UAT steps, then update this file with:
-- The actual verdict (PASS / FAIL / PARTIAL)
-- Results for each check
-- Date completed
-
-Once updated, run `/gsd auto` to resume auto-mode.
+<any additional context, errors encountered, screenshots/logs gathered, or manual follow-up still required>
 ```
 
 ---

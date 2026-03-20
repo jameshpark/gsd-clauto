@@ -7,12 +7,16 @@
  */
 
 import { join } from "node:path";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { nativeRmCached } from "./native-git-bridge.js";
+import { execFileSync } from "node:child_process";
+import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { nativeRmCached, nativeLsFiles } from "./native-git-bridge.js";
+import { gsdRoot } from "./paths.js";
+import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
 
 /**
- * Patterns that are always correct regardless of project type.
- * No one ever wants these tracked.
+ * GSD runtime patterns for git index cleanup.
+ * With external state (symlink), these are a no-op in most cases,
+ * but retained for backwards compatibility during migration.
  */
 const GSD_RUNTIME_PATTERNS = [
   ".gsd/activity/",
@@ -31,8 +35,8 @@ const GSD_RUNTIME_PATTERNS = [
 ] as const;
 
 const BASELINE_PATTERNS = [
-  // ── GSD runtime (not source artifacts — planning files are tracked) ──
-  ...GSD_RUNTIME_PATTERNS,
+  // ── GSD state directory (symlink to external storage) ──
+  ".gsd",
 
   // ── OS junk ──
   ".DS_Store",
@@ -77,52 +81,72 @@ const BASELINE_PATTERNS = [
 ];
 
 /**
- * Ensure basePath/.gitignore contains all baseline patterns.
- * Creates the file if missing; appends only missing lines if it exists.
+ * Check whether `.gsd/` contains files tracked by git.
+ * If so, the project intentionally keeps `.gsd/` in version control
+ * and we must NOT add `.gsd` to `.gitignore` or attempt migration.
+ *
+ * Returns true if git tracks at least one file under `.gsd/`.
+ * Returns false (safe to ignore) if:
+ *   - Not a git repo
+ *   - `.gsd/` is a symlink (external state, should be ignored)
+ *   - `.gsd/` doesn't exist
+ *   - No tracked files found under `.gsd/`
+ */
+export function hasGitTrackedGsdFiles(basePath: string): boolean {
+  const localGsd = join(basePath, ".gsd");
+
+  // If .gsd doesn't exist or is already a symlink, no tracked files concern
+  if (!existsSync(localGsd)) return false;
+  try {
+    if (lstatSync(localGsd).isSymbolicLink()) return false;
+  } catch {
+    return false;
+  }
+
+  // Check if git tracks any files under .gsd/
+  try {
+    const tracked = nativeLsFiles(basePath, ".gsd");
+    if (tracked.length > 0) return true;
+
+    // nativeLsFiles swallows git failures and returns []. An empty result
+    // could mean "nothing tracked" OR "git failed silently". Verify git is
+    // reachable before trusting the empty result — if it isn't, fail safe
+    // by assuming files ARE tracked to prevent data loss.
+    execFileSync("git", ["rev-parse", "--git-dir"], {
+      cwd: basePath,
+      stdio: "pipe",
+      env: GIT_NO_PROMPT_ENV,
+    });
+
+    return false;
+  } catch {
+    // git unavailable, index locked, or repo corrupt — fail safe
+    return true;
+  }
+}
+
+/**
+ * Ensure basePath/.gitignore contains baseline ignore patterns.
+ * Creates the file if missing; appends missing patterns.
  * Returns true if the file was created or modified, false if already complete.
  *
- * When `commitDocs` is false, the entire `.gsd/` directory is added to
- * .gitignore instead of individual runtime patterns, keeping all GSD
- * artifacts local-only.
+ * **Safety check:** If `.gsd/` contains git-tracked files (i.e., the project
+ * intentionally keeps `.gsd/` in version control), the `.gsd` ignore pattern
+ * is excluded to prevent data loss. Only the `.gsd` pattern is affected —
+ * all other baseline patterns are still applied normally.
  */
-export function ensureGitignore(basePath: string, options?: { commitDocs?: boolean; manageGitignore?: boolean }): boolean {
+export function ensureGitignore(
+  basePath: string,
+  options?: { manageGitignore?: boolean; commitDocs?: boolean },
+): boolean {
   // If manage_gitignore is explicitly false, do not touch .gitignore at all
   if (options?.manageGitignore === false) return false;
 
   const gitignorePath = join(basePath, ".gitignore");
-  const commitDocs = options?.commitDocs !== false; // default true
 
   let existing = "";
   if (existsSync(gitignorePath)) {
     existing = readFileSync(gitignorePath, "utf-8");
-  }
-
-  // When commit_docs is false, ensure blanket ".gsd/" is in .gitignore
-  // and skip the self-heal that would remove it.
-  if (!commitDocs) {
-    return ensureBlanketGsdIgnore(gitignorePath, existing);
-  }
-
-  // Self-heal: remove blanket ".gsd/" lines from pre-v2.14.0 projects.
-  // The blanket ignore prevented planning artifacts (.gsd/milestones/) from
-  // being tracked in git, causing artifacts to vanish in worktrees and
-  // triggering loop detection failures. Replace with explicit runtime-only
-  // ignores so planning files are tracked naturally.
-  let modified = false;
-  const lines = existing.split("\n");
-  const filteredLines = lines.filter(line => {
-    const trimmed = line.trim();
-    // Remove standalone ".gsd/" lines (blanket ignore) but keep specific
-    // .gsd/ subpath patterns like ".gsd/activity/" or ".gsd/auto.lock"
-    if (trimmed === ".gsd/" || trimmed === ".gsd") {
-      modified = true;
-      return false;
-    }
-    return true;
-  });
-  if (modified) {
-    existing = filteredLines.join("\n");
-    writeFileSync(gitignorePath, existing, "utf-8");
   }
 
   // Parse existing lines (trimmed, ignoring comments and blanks)
@@ -133,10 +157,17 @@ export function ensureGitignore(basePath: string, options?: { commitDocs?: boole
       .filter((l) => l && !l.startsWith("#")),
   );
 
-  // Find patterns not yet present
-  const missing = BASELINE_PATTERNS.filter((p) => !existingLines.has(p));
+  // Determine which patterns to apply. If .gsd/ has tracked files,
+  // exclude the ".gsd" pattern to prevent deleting tracked state.
+  const gsdIsTracked = hasGitTrackedGsdFiles(basePath);
+  const patternsToApply = gsdIsTracked
+    ? BASELINE_PATTERNS.filter((p) => p !== ".gsd")
+    : BASELINE_PATTERNS;
 
-  if (missing.length === 0) return modified;
+  // Find patterns not yet present
+  const missing = patternsToApply.filter((p) => !existingLines.has(p));
+
+  if (missing.length === 0) return false;
 
   // Build the block to append
   const block = [
@@ -160,6 +191,11 @@ export function ensureGitignore(basePath: string, options?: { commitDocs?: boole
  * already in the index even after .gitignore is updated.
  *
  * Only removes from the index (`--cached`), never from disk. Idempotent.
+ *
+ * Note: These are strictly runtime/ephemeral paths (activity logs, lock files,
+ * metrics, STATE.md). They are always safe to untrack, even when the project
+ * intentionally keeps other `.gsd/` files (like PROJECT.md, milestones/) in
+ * version control.
  */
 export function untrackRuntimeFiles(basePath: string): void {
   const runtimePaths = GSD_RUNTIME_PATTERNS;
@@ -184,8 +220,8 @@ export function untrackRuntimeFiles(basePath: string): void {
  * creating a duplicate when an uppercase file already exists.
  */
 export function ensurePreferences(basePath: string): boolean {
-  const preferencesPath = join(basePath, ".gsd", "preferences.md");
-  const legacyPath = join(basePath, ".gsd", "PREFERENCES.md");
+  const preferencesPath = join(gsdRoot(basePath), "preferences.md");
+  const legacyPath = join(gsdRoot(basePath), "PREFERENCES.md");
 
   if (existsSync(preferencesPath) || existsSync(legacyPath)) {
     return false;
@@ -219,7 +255,7 @@ See \`~/.gsd/agent/extensions/gsd/docs/preferences-reference.md\` for full field
 - \`models\`: Model preferences for specific task types
 - \`skill_discovery\`: Automatic skill detection preferences
 - \`auto_supervisor\`: Supervision and gating rules for autonomous modes
-- \`git\`: Git preferences — \`main_branch\` (default branch name for new repos, e.g., "main", "master", "trunk"), \`auto_push\`, \`snapshots\`, \`commit_docs\` (set to \`false\` to keep .gsd/ local-only), etc.
+- \`git\`: Git preferences — \`main_branch\` (default branch name for new repos, e.g., "main", "master", "trunk"), \`auto_push\`, \`snapshots\`, etc.
 
 ## Examples
 
@@ -237,34 +273,6 @@ custom_instructions:
 `;
 
   writeFileSync(preferencesPath, template, "utf-8");
-  return true;
-}
-
-/**
- * When commit_docs is false, ensure `.gsd/` is in .gitignore as a blanket
- * pattern. This keeps all GSD artifacts local-only.
- * Returns true if the file was modified, false if already complete.
- */
-function ensureBlanketGsdIgnore(gitignorePath: string, existing: string): boolean {
-  const existingLines = new Set(
-    existing
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l && !l.startsWith("#")),
-  );
-
-  // Already has blanket .gsd/ ignore
-  if (existingLines.has(".gsd/") || existingLines.has(".gsd")) return false;
-
-  const block = [
-    "",
-    "# ── GSD (local-only, commit_docs: false) ──",
-    ".gsd/",
-    "",
-  ].join("\n");
-
-  const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
-  writeFileSync(gitignorePath, existing + prefix + block, "utf-8");
   return true;
 }
 

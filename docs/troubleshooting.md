@@ -41,12 +41,37 @@ It checks:
 
 **Fix:** This was fixed in v2.14+. If you're on an older version, update. The dispatch prompt now includes explicit working directory instructions.
 
+### `command not found: gsd` after install
+
+**Symptoms:** `npm install -g gsd-pi` succeeds but `gsd` isn't found.
+
+**Cause:** npm's global bin directory isn't in your shell's `$PATH`.
+
+**Fix:**
+
+```bash
+# Find where npm installed the binary
+npm prefix -g
+# Output: /opt/homebrew (Apple Silicon) or /usr/local (Intel Mac)
+
+# Add the bin directory to your PATH if missing
+echo 'export PATH="$(npm prefix -g)/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+**Workaround:** Run `npx gsd-pi` or `$(npm prefix -g)/bin/gsd` directly.
+
+**Common causes:**
+- **Homebrew Node** — `/opt/homebrew/bin` should be in PATH but sometimes isn't if Homebrew init is missing from your shell profile
+- **Version manager (nvm, fnm, mise)** — global bin is version-specific; ensure your version manager initializes in your shell config
+- **oh-my-zsh** — the `gitfast` plugin aliases `gsd` to `git svn dcommit`. Check with `alias gsd` and unalias if needed
+
 ### `npm install -g gsd-pi` fails
 
 **Common causes:**
 - Missing workspace packages — fixed in v2.10.4+
 - `postinstall` hangs on Linux (Playwright `--with-deps` triggering sudo) — fixed in v2.3.6+
-- Node.js version too old — requires ≥ 20.6.0
+- Node.js version too old — requires ≥ 22.0.0
 
 ### Provider errors during auto mode
 
@@ -82,13 +107,111 @@ models:
 
 **Symptoms:** Auto mode won't start, says another session is running.
 
-**Fix:** If no other session is actually running, delete `.gsd/auto.lock` manually. GSD includes stale lock detection (checks if the PID is still alive), but edge cases exist.
+**Fix:** GSD automatically detects stale locks — if the owning PID is dead, the lock is cleaned up and re-acquired on the next `/gsd auto`. This includes stranded `.gsd.lock/` directories left by `proper-lockfile` after crashes. If automatic recovery fails, delete `.gsd/auto.lock` and the `.gsd.lock/` directory manually:
+
+```bash
+rm -f .gsd/auto.lock
+rm -rf "$(dirname .gsd)/.gsd.lock"
+```
 
 ### Git merge conflicts
 
 **Symptoms:** Worktree merge fails on `.gsd/` files.
 
 **Fix:** GSD auto-resolves conflicts on `.gsd/` runtime files. For content conflicts in code files, the LLM is given an opportunity to resolve them via a fix-merge session. If that fails, manual resolution is needed.
+
+## MCP Client Issues
+
+### `mcp_servers` shows no configured servers
+
+**Symptoms:** `mcp_servers` reports no servers configured.
+
+**Common causes:**
+- No `.mcp.json` or `.gsd/mcp.json` file exists in the current project
+- The config file is malformed JSON
+- The server is configured in a different project directory than the one where you launched GSD
+
+**Fix:**
+- Add the server to `.mcp.json` or `.gsd/mcp.json`
+- Verify the file parses as JSON
+- Re-run `mcp_servers(refresh=true)`
+
+### `mcp_discover` times out
+
+**Symptoms:** `mcp_discover` fails with a timeout.
+
+**Common causes:**
+- The server process starts but never completes the MCP handshake
+- The configured command points to a script that hangs on startup
+- The server is waiting on an unavailable dependency or backend service
+
+**Fix:**
+- Run the configured command directly outside GSD and confirm the server actually starts
+- Check that any backend URLs or required services are reachable
+- For local custom servers, verify the implementation is using an MCP SDK or a correct stdio protocol implementation
+
+### `mcp_discover` reports connection closed
+
+**Symptoms:** `mcp_discover` fails immediately with a connection-closed error.
+
+**Common causes:**
+- Wrong executable path
+- Wrong script path
+- Missing runtime dependency
+- The server crashes before responding
+
+**Fix:**
+- Verify `command` and `args` paths are correct and absolute
+- Run the command manually to catch import/runtime errors
+- Check that the configured interpreter or runtime exists on the machine
+
+### `mcp_call` fails because required arguments are missing
+
+**Symptoms:** A discovered MCP tool exists, but calling it fails validation because required fields are missing.
+
+**Common causes:**
+- The call shape is wrong
+- The target server's tool schema changed
+- You're calling a stale server definition or stale branch build
+
+**Fix:**
+- Re-run `mcp_discover(server="name")` and confirm the exact required argument names
+- Call the tool with `mcp_call(server="name", tool="tool_name", args={...})`
+- If you're developing GSD itself, rebuild after schema changes with `npm run build`
+
+### Local stdio server works manually but not in GSD
+
+**Symptoms:** Running the server command manually seems fine, but GSD can't connect.
+
+**Common causes:**
+- The server depends on shell state that GSD doesn't inherit
+- Relative paths only work from a different working directory
+- Required environment variables exist in your shell but not in the MCP config
+
+**Fix:**
+- Use absolute paths for `command` and script arguments
+- Set required environment variables in the MCP config's `env` block
+- If needed, set `cwd` explicitly in the server definition
+
+### Session lock stolen by `/gsd` in another terminal
+
+**Symptoms:** Running `/gsd` (step mode) in a second terminal causes a running auto-mode session to lose its lock.
+
+**Fix:** Fixed in v2.36.0. Bare `/gsd` no longer steals the session lock from a running auto-mode session. Upgrade to the latest version.
+
+### Worktree commits landing on main instead of milestone branch
+
+**Symptoms:** Auto-mode commits in a worktree end up on `main` instead of the `milestone/<MID>` branch.
+
+**Fix:** Fixed in v2.37.1. CWD is now realigned before dispatch and stale merge state is cleaned on failure. Upgrade to the latest version.
+
+### Extension loader fails with subpath export error
+
+**Symptoms:** Extension fails to load with a `Cannot find module` error referencing npm subpath exports.
+
+**Cause:** Dynamic imports in the extension loader didn't resolve npm subpath exports (e.g., `@pkg/foo/bar`).
+
+**Fix:** Fixed in v2.38+. The extension loader now auto-resolves npm subpath exports and creates a `node_modules` symlink for dynamic import resolution. Upgrade to the latest version.
 
 ## Recovery Procedures
 

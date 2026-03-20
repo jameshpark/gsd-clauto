@@ -20,7 +20,6 @@ export interface EvidenceCheckJSON {
   exitCode: number;
   durationMs: number;
   verdict: "pass" | "fail";
-  blocking: boolean;
 }
 
 export interface RuntimeErrorJSON {
@@ -38,6 +37,21 @@ export interface AuditWarningJSON {
   fixAvailable: boolean;
 }
 
+export interface BrowserEvidenceCheckJSON {
+  description: string;
+  passed: boolean;
+  actual?: string;
+  evidence?: string;
+  error?: string;
+}
+
+export interface BrowserEvidenceJSON {
+  url: string;
+  passed: boolean;
+  checks: BrowserEvidenceCheckJSON[];
+  duration: number;
+}
+
 export interface EvidenceJSON {
   schemaVersion: 1;
   taskId: string;
@@ -50,6 +64,7 @@ export interface EvidenceJSON {
   maxRetries?: number;
   runtimeErrors?: RuntimeErrorJSON[];
   auditWarnings?: AuditWarningJSON[];
+  browser?: BrowserEvidenceJSON;
 }
 
 /**
@@ -81,7 +96,6 @@ export function writeVerificationJSON(
       exitCode: check.exitCode,
       durationMs: check.durationMs,
       verdict: check.exitCode === 0 ? "pass" : "fail",
-      blocking: check.blocking,
     })),
     ...(retryAttempt !== undefined ? { retryAttempt } : {}),
     ...(maxRetries !== undefined ? { maxRetries } : {}),

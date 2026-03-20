@@ -10,6 +10,7 @@ import { existsSync, readFileSync, unlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { GSDError, GSD_GIT_ERROR } from "./errors.js";
 import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
+import { getErrorMessage } from "./error-utils.js";
 
 // Issue #453: keep auto-mode bookkeeping on the stable git CLI path unless a
 // caller explicitly opts into the native helper.
@@ -671,6 +672,43 @@ export function nativeAddAll(basePath: string): void {
 }
 
 /**
+ * Stage all files with pathspec exclusions (git add -A -- ':!pattern' ...).
+ * Excluded paths are never hashed by git, preventing hangs on large
+ * untracked artifact trees (57GB+, 11K+ files). See #1605.
+ *
+ * Falls back to plain `git add -A` when no exclusions are provided.
+ * Always uses the CLI path (not libgit2) because libgit2's add_all
+ * does not support pathspec exclusion syntax.
+ *
+ * When excluded paths are already covered by .gitignore, git may exit
+ * with code 1 and an "ignored by .gitignore" warning. This is harmless
+ * (the staging succeeds for all non-ignored files) and is suppressed.
+ */
+export function nativeAddAllWithExclusions(basePath: string, exclusions: readonly string[]): void {
+  if (exclusions.length === 0) {
+    nativeAddAll(basePath);
+    return;
+  }
+  const pathspecs = exclusions.map(e => `:!${e}`);
+  try {
+    execFileSync("git", ["add", "-A", "--", ...pathspecs], {
+      cwd: basePath,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf-8",
+      env: GIT_NO_PROMPT_ENV,
+    });
+  } catch (err: unknown) {
+    // git exits 1 when pathspec exclusions reference paths already covered
+    // by .gitignore. The staging itself succeeds — only suppress that case.
+    const stderr = (err as { stderr?: string })?.stderr ?? "";
+    if (stderr.includes("ignored by one of your .gitignore files")) {
+      return;
+    }
+    throw new GSDError(GSD_GIT_ERROR, `git add -A with exclusions failed in ${basePath}: ${getErrorMessage(err)}`);
+  }
+}
+
+/**
  * Stage specific files.
  * Native: libgit2 index add.
  * Fallback: `git add -- <paths>`.
@@ -716,7 +754,7 @@ export function nativeCommit(
     try {
       return native.gitCommit(basePath, message, options?.allowEmpty);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = getErrorMessage(e);
       if (msg.includes("nothing to commit")) return null;
       throw e;
     }

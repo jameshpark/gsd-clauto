@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 import { parseFrontmatter } from "../utils/frontmatter.js";
+import { toPosixPath } from "../utils/path-display.js";
 import type { ResourceDiagnostic } from "./diagnostics.js";
 
 /** Max name length per spec */
@@ -15,10 +16,6 @@ const MAX_DESCRIPTION_LENGTH = 1024;
 const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"];
 
 type IgnoreMatcher = ReturnType<typeof ignore>;
-
-function toPosixPath(p: string): string {
-	return p.split(sep).join("/");
-}
 
 function prefixIgnorePattern(line: string, prefix: string): string | null {
 	const trimmed = line.trim();
@@ -82,6 +79,12 @@ export interface Skill {
 export interface LoadSkillsResult {
 	skills: Skill[];
 	diagnostics: ResourceDiagnostic[];
+}
+
+let loadedSkills: Skill[] = [];
+
+export function getLoadedSkills(): Skill[] {
+	return [...loadedSkills];
 }
 
 /**
@@ -452,8 +455,10 @@ export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
 		}
 	}
 
+	loadedSkills = Array.from(skillMap.values());
+
 	return {
-		skills: Array.from(skillMap.values()),
+		skills: [...loadedSkills],
 		diagnostics: [...allDiagnostics, ...collisionDiagnostics],
 	};
 }

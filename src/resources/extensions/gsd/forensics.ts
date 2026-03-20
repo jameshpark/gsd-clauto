@@ -27,7 +27,7 @@ import { deriveState } from "./state.js";
 import { isAutoActive } from "./auto.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { gsdRoot } from "./paths.js";
-import { formatDuration } from "../shared/mod.js";
+import { formatDuration } from "../shared/format-utils.js";
 import { getAutoWorktreePath } from "./auto-worktree.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -268,7 +268,7 @@ function resolveActivityDirs(basePath: string, activeMilestone?: string | null):
   if (activeMilestone) {
     const wtPath = getAutoWorktreePath(basePath, activeMilestone);
     if (wtPath) {
-      const wtActivityDir = join(wtPath, ".gsd", "activity");
+      const wtActivityDir = join(gsdRoot(wtPath), "activity");
       if (existsSync(wtActivityDir)) {
         dirs.push(wtActivityDir);
       }
@@ -285,7 +285,7 @@ function resolveActivityDirs(basePath: string, activeMilestone?: string | null):
 // ─── Completed Keys Loader ────────────────────────────────────────────────────
 
 function loadCompletedKeys(basePath: string): string[] {
-  const file = join(basePath, ".gsd", "completed-units.json");
+  const file = join(gsdRoot(basePath), "completed-units.json");
   try {
     if (existsSync(file)) {
       return JSON.parse(readFileSync(file, "utf-8"));

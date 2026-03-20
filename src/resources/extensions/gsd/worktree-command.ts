@@ -228,6 +228,15 @@ async function worktreeHandler(
   }
 }
 
+export async function handleWorktreeCommand(
+  args: string,
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+  alias: string,
+): Promise<void> {
+  await worktreeHandler(args, ctx, pi, alias);
+}
+
 export function registerWorktreeCommand(pi: ExtensionAPI): void {
   // Restore worktree state after /reload.
   // The module-level originalCwd resets to null when extensions are re-loaded,
@@ -246,7 +255,7 @@ export function registerWorktreeCommand(pi: ExtensionAPI): void {
     getArgumentCompletions: worktreeCompletions,
 
     async handler(args: string, ctx: ExtensionCommandContext) {
-      await worktreeHandler(args, ctx, pi, "worktree");
+      await handleWorktreeCommand(args, ctx, pi, "worktree");
     },
   });
 
@@ -255,7 +264,7 @@ export function registerWorktreeCommand(pi: ExtensionAPI): void {
     description: "Alias for /worktree",
     getArgumentCompletions: worktreeCompletions,
     async handler(args: string, ctx: ExtensionCommandContext) {
-      await worktreeHandler(args, ctx, pi, "wt");
+      await handleWorktreeCommand(args, ctx, pi, "wt");
     },
   });
 }

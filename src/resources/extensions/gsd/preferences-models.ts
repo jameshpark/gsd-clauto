@@ -254,13 +254,19 @@ export function resolveProfileDefaults(profile: TokenProfile): Partial<GSDPrefer
           subagent: "claude-sonnet-4-5-20250514",
         },
         phases: {
+          skip_research: true,
+          skip_reassess: true,
           skip_slice_research: true,
         },
       };
     case "quality":
       return {
         models: {},
-        phases: {},
+        phases: {
+          skip_research: true,
+          skip_slice_research: true,
+          skip_reassess: true,
+        },
       };
   }
 }
@@ -287,18 +293,6 @@ export function resolveInlineLevel(): InlineLevel {
     case "balanced": return "standard";
     case "quality": return "full";
   }
-}
-
-/**
- * Resolve the compression strategy from the active token profile.
- * budget/balanced -> "compress", quality -> "truncate".
- * Explicit preference always wins.
- */
-export function resolveCompressionStrategy(): import("./types.js").CompressionStrategy {
-  const prefs = loadEffectiveGSDPreferences();
-  if (prefs?.preferences.compression_strategy) return prefs.preferences.compression_strategy;
-  const profile = resolveEffectiveProfile();
-  return profile === "quality" ? "truncate" : "compress";
 }
 
 /**

@@ -6,6 +6,8 @@
 //   (a)–(j)  extractUatType classification (17 assertions from T01)
 //   (k)      run-uat prompt template loading and content integrity (8 assertions)
 //   (l)      dispatch precondition assertions via resolveSliceFile (4 assertions)
+//   (m)      non-artifact UAT skip: human-experience UATs are not dispatched (1 assertion)
+//   (n)      stale replay guard: existing UAT-RESULT never re-dispatches (1 assertion)
 
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -14,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { extractUatType } from '../files.ts';
 import { resolveSliceFile } from '../paths.ts';
+import { checkNeedsRunUat } from '../auto-prompts.ts';
 import { createTestContext } from './test-helpers.ts';
 
 // ─── Worktree-aware prompt loader ──────────────────────────────────────────
@@ -26,7 +29,11 @@ const worktreePromptsDir = join(__dirname, '..', 'prompts');
 function loadPromptFromWorktree(name: string, vars: Record<string, string> = {}): string {
   const path = join(worktreePromptsDir, `${name}.md`);
   let content = readFileSync(path, 'utf-8');
-  for (const [key, value] of Object.entries(vars)) {
+  const effectiveVars = {
+    skillActivation: 'If no installed skill clearly matches this unit, skip explicit skill activation and continue with the required workflow.',
+    ...vars,
+  };
+  for (const [key, value] of Object.entries(effectiveVars)) {
     content = content.replaceAll(`{{${key}}}`, value);
   }
   return content.trim();
@@ -207,7 +214,7 @@ async function main(): Promise<void> {
   const sliceId = 'S01';
   const uatPath = '.gsd/milestones/M001/slices/S01/S01-UAT.md';
   const uatResultPath = '.gsd/milestones/M001/slices/S01/S01-UAT-RESULT.md';
-  const uatType = 'artifact-driven';
+  const uatType = 'live-runtime';
   const inlinedContext = '<!-- no context -->';
 
   let promptResult: string | undefined;
@@ -244,16 +251,24 @@ async function main(): Promise<void> {
     `prompt contains uatResultPath value after substitution`,
   );
   assertTrue(
+    promptResult?.includes(`Detected UAT mode:** \`${uatType}\``) ?? false,
+    `prompt contains detected dynamic uatType value "${uatType}" after substitution`,
+  );
+  assertTrue(
+    promptResult?.includes(`uatType: ${uatType}`) ?? false,
+    `prompt contains dynamic uatType frontmatter value "${uatType}" after substitution`,
+  );
+  assertTrue(
     !/\{\{[^}]+\}\}/.test(promptResult ?? ''),
     'no unreplaced {{...}} tokens remain after variable substitution',
   );
   assertTrue(
-    /artifact|execute|run/i.test(promptResult ?? ''),
-    'prompt contains artifact-driven execution language (artifact/execute/run)',
+    /browser|runtime|execute|run/i.test(promptResult ?? ''),
+    'prompt contains runtime execution language (browser/runtime/execute/run)',
   );
   assertTrue(
-    /surfaced for human review/i.test(promptResult ?? ''),
-    'prompt contains "surfaced for human review" text for non-artifact-driven path',
+    !/surfaced for human review/i.test(promptResult ?? ''),
+    'prompt does not contain "surfaced for human review" (non-artifact UATs are skipped, not dispatched)',
   );
 
   // ─── (l) dispatch precondition assertions via resolveSliceFile ────────────
@@ -302,6 +317,102 @@ async function main(): Promise<void> {
       assertTrue(
         uatResultFilePath !== null,
         'resolveSliceFile(..., "UAT-RESULT") returns non-null when result file exists (idempotent skip state)',
+      );
+    } finally {
+      cleanup(base);
+    }
+  }
+
+  // ─── (m) non-artifact UATs are skipped (not dispatched) ─────────────────
+  console.log('\n── (m) non-artifact UAT skip');
+
+  {
+    const base = createFixtureBase();
+    try {
+      const roadmapDir = join(base, '.gsd', 'milestones', 'M001');
+      mkdirSync(roadmapDir, { recursive: true });
+      writeFileSync(
+        join(roadmapDir, 'M001-ROADMAP.md'),
+        [
+          '# M001: Test roadmap',
+          '',
+          '## Slices',
+          '',
+          '- [x] **S01: First slice** `risk:low` `depends:[]`',
+          '- [ ] **S02: Next slice** `risk:low` `depends:[S01]`',
+          '',
+          '## Boundary Map',
+          '',
+        ].join('\n'),
+      );
+
+      // human-experience UAT still dispatches, but auto-mode later pauses for manual review
+      writeSliceFile(base, 'M001', 'S01', 'UAT', makeUatContent('human-experience'));
+
+      const state = {
+        activeMilestone: { id: 'M001', title: 'Test roadmap' },
+        activeSlice: { id: 'S02', title: 'Next slice' },
+        activeTask: null,
+        phase: 'planning',
+        recentDecisions: [],
+        blockers: [],
+        nextAction: 'Plan S02',
+        registry: [],
+      } as const;
+
+      const result = await checkNeedsRunUat(base, 'M001', state as any, { uat_dispatch: true } as any);
+      assertEq(
+        result,
+        { sliceId: 'S01', uatType: 'human-experience' },
+        'human-experience UAT dispatches so auto-mode can pause for manual review',
+      );
+    } finally {
+      cleanup(base);
+    }
+  }
+
+  // ─── (n) existing UAT-RESULT never re-dispatches ──────────────────────
+  console.log('\n── (n) stale replay guard');
+
+  {
+    const base = createFixtureBase();
+    try {
+      const roadmapDir = join(base, '.gsd', 'milestones', 'M001');
+      mkdirSync(roadmapDir, { recursive: true });
+      writeFileSync(
+        join(roadmapDir, 'M001-ROADMAP.md'),
+        [
+          '# M001: Test roadmap',
+          '',
+          '## Slices',
+          '',
+          '- [x] **S01: First slice** `risk:low` `depends:[]`',
+          '- [ ] **S02: Next slice** `risk:low` `depends:[S01]`',
+          '',
+          '## Boundary Map',
+          '',
+        ].join('\n'),
+      );
+
+      writeSliceFile(base, 'M001', 'S01', 'UAT', makeUatContent('artifact-driven'));
+      writeSliceFile(base, 'M001', 'S01', 'UAT-RESULT', '---\nverdict: FAIL\n---\n');
+
+      const state = {
+        activeMilestone: { id: 'M001', title: 'Test roadmap' },
+        activeSlice: { id: 'S02', title: 'Next slice' },
+        activeTask: null,
+        phase: 'planning',
+        recentDecisions: [],
+        blockers: [],
+        nextAction: 'Plan S02',
+        registry: [],
+      } as const;
+
+      const result = await checkNeedsRunUat(base, 'M001', state as any, { uat_dispatch: true } as any);
+      assertEq(
+        result,
+        null,
+        'existing UAT-RESULT with FAIL verdict does not re-dispatch; verdict gate owns blocking',
       );
     } finally {
       cleanup(base);

@@ -20,7 +20,6 @@ git:
   main_branch:
   merge_strategy:
   isolation:
-  commit_docs:
   manage_gitignore:
   worktree_post_create:
 unique_milestone_ids:
@@ -31,6 +30,7 @@ token_profile:
 phases:
   skip_research:
   skip_reassess:
+  reassess_after_slice:
   skip_slice_research:
 dynamic_routing:
   enabled:
@@ -57,6 +57,12 @@ notifications:
   on_budget:
   on_milestone:
   on_attention:
+cmux:
+  enabled:
+  notifications:
+  sidebar:
+  splits:
+  browser:
 remote_questions:
   channel:
   channel_id:

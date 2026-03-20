@@ -7,19 +7,20 @@ import { promises as fs } from 'node:fs';
 import { resolve } from 'node:path';
 import { atomicWriteAsync } from './atomic-write.js';
 import { resolveMilestoneFile, relMilestoneFile, resolveGsdRootFile } from './paths.js';
-import { milestoneIdSort, findMilestoneIds } from './guided-flow.js';
+import { milestoneIdSort, findMilestoneIds } from './milestone-ids.js';
 
 import type {
   Roadmap, BoundaryMapEntry,
-  SlicePlan, TaskPlanEntry,
+  SlicePlan, TaskPlanEntry, TaskPlanFile, TaskPlanFrontmatter,
   Summary, SummaryFrontmatter, SummaryRequires, FileModified,
   Continue, ContinueFrontmatter, ContinueStatus,
   RequirementCounts,
+  TaskIO,
   SecretsManifest, SecretsManifestEntry, SecretsManifestEntryStatus,
   ManifestStatus,
 } from './types.js';
 
-import { checkExistingEnvKeys } from '../get-secrets-from-user.js';
+import { checkExistingEnvKeys } from '../env-utils.js';
 import { parseRoadmapSlices } from './roadmap-slices.js';
 import { nativeParseRoadmap, nativeExtractSection, nativeParsePlanFile, nativeParseSummaryFile, NATIVE_UNAVAILABLE } from './native-parser-bridge.js';
 import { debugTime, debugCount } from './debug-logger.js';
@@ -276,14 +277,52 @@ export function formatSecretsManifest(manifest: SecretsManifest): string {
 
 // ─── Slice Plan Parser ─────────────────────────────────────────────────────
 
+function normalizeTaskPlanFrontmatter(frontmatter: Record<string, unknown>): TaskPlanFrontmatter {
+  const estimatedStepsRaw = frontmatter.estimated_steps;
+  const estimatedFilesRaw = frontmatter.estimated_files;
+  const skillsUsedRaw = frontmatter.skills_used;
+
+  const parseOptionalNumber = (value: unknown): number | undefined => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = parseInt(value, 10);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
+  };
+
+  const estimated_steps = parseOptionalNumber(estimatedStepsRaw);
+  const estimated_files = parseOptionalNumber(estimatedFilesRaw);
+  const skills_used = Array.isArray(skillsUsedRaw)
+    ? skillsUsedRaw.map(v => String(v).trim()).filter(Boolean)
+    : typeof skillsUsedRaw === 'string' && skillsUsedRaw.trim()
+      ? [skillsUsedRaw.trim()]
+      : [];
+
+  return {
+    ...(estimated_steps !== undefined ? { estimated_steps } : {}),
+    ...(estimated_files !== undefined ? { estimated_files } : {}),
+    skills_used,
+  };
+}
+
+export function parseTaskPlanFile(content: string): TaskPlanFile {
+  const [fmLines] = splitFrontmatter(content);
+  const fm = fmLines ? parseFrontmatterMap(fmLines) : {};
+  return {
+    frontmatter: normalizeTaskPlanFrontmatter(fm),
+  };
+}
+
 export function parsePlan(content: string): SlicePlan {
   return cachedParse(content, 'plan', _parsePlanImpl);
 }
 
 function _parsePlanImpl(content: string): SlicePlan {
   const stopTimer = debugTime("parse-plan");
+  const [, body] = splitFrontmatter(content);
   // Try native parser first for better performance
-  const nativeResult = nativeParsePlanFile(content);
+  const nativeResult = nativeParsePlanFile(body);
   if (nativeResult) {
     stopTimer({ native: true });
     return {
@@ -305,7 +344,7 @@ function _parsePlanImpl(content: string): SlicePlan {
     };
   }
 
-  const lines = content.split('\n');
+  const lines = body.split('\n');
 
   const h1 = lines.find(l => l.startsWith('# '));
   let id = '';
@@ -320,13 +359,13 @@ function _parsePlanImpl(content: string): SlicePlan {
     }
   }
 
-  const goal = extractBoldField(content, 'Goal') || '';
-  const demo = extractBoldField(content, 'Demo') || '';
+  const goal = extractBoldField(body, 'Goal') || '';
+  const demo = extractBoldField(body, 'Demo') || '';
 
-  const mhSection = extractSection(content, 'Must-Haves');
+  const mhSection = extractSection(body, 'Must-Haves');
   const mustHaves = mhSection ? parseBullets(mhSection) : [];
 
-  const tasksSection = extractSection(content, 'Tasks');
+  const tasksSection = extractSection(body, 'Tasks');
   const tasks: TaskPlanEntry[] = [];
 
   if (tasksSection) {
@@ -374,7 +413,7 @@ function _parsePlanImpl(content: string): SlicePlan {
     if (currentTask) tasks.push(currentTask);
   }
 
-  const filesSection = extractSection(content, 'Files Likely Touched');
+  const filesSection = extractSection(body, 'Files Likely Touched');
   const filesLikelyTouched = filesSection ? parseBullets(filesSection) : [];
 
   const result = { id, title, goal, demo, mustHaves, tasks, filesLikelyTouched };
@@ -590,7 +629,8 @@ export async function loadFile(path: string): Promise<string | null> {
   try {
     return await fs.readFile(path, 'utf-8');
   } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'EISDIR') return null;
     throw err;
   }
 }
@@ -723,13 +763,57 @@ export function countMustHavesMentionedInSummary(
   return count;
 }
 
+// ─── Task Plan IO Extractor ────────────────────────────────────────────────
+
+/**
+ * Extract input and output file paths from a task plan's `## Inputs` and
+ * `## Expected Output` sections. Looks for backtick-wrapped file paths on
+ * each line (e.g. `` `src/foo.ts` ``).
+ *
+ * Returns empty arrays for missing/empty sections — callers should treat
+ * tasks with no IO as ambiguous (sequential fallback trigger).
+ */
+export function parseTaskPlanIO(content: string): { inputFiles: string[]; outputFiles: string[] } {
+  const backtickPathRegex = /`([^`]+)`/g;
+
+  function extractPaths(sectionText: string | null): string[] {
+    if (!sectionText) return [];
+    const paths: string[] = [];
+    for (const line of sectionText.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      let match: RegExpExecArray | null;
+      backtickPathRegex.lastIndex = 0;
+      while ((match = backtickPathRegex.exec(trimmed)) !== null) {
+        const candidate = match[1];
+        // Filter out things that look like code tokens rather than file paths
+        // (e.g. `true`, `false`, `npm run test`). A file path has at least one
+        // dot or slash.
+        if (candidate.includes("/") || candidate.includes(".")) {
+          paths.push(candidate);
+        }
+      }
+    }
+    return paths;
+  }
+
+  const [, body] = splitFrontmatter(content);
+  const inputSection = extractSection(body, "Inputs");
+  const outputSection = extractSection(body, "Expected Output");
+
+  return {
+    inputFiles: extractPaths(inputSection),
+    outputFiles: extractPaths(outputSection),
+  };
+}
+
 // ─── UAT Type Extractor ────────────────────────────────────────────────────
 
 /**
  * The four UAT classification types recognised by GSD auto-mode.
  * `undefined` is returned (not this union) when no type can be determined.
  */
-export type UatType = 'artifact-driven' | 'live-runtime' | 'human-experience' | 'mixed';
+export type UatType = 'artifact-driven' | 'live-runtime' | 'human-experience' | 'mixed' | 'browser-executable' | 'runtime-executable';
 
 /**
  * Extract the UAT type from a UAT file's raw content.
@@ -753,6 +837,8 @@ export function extractUatType(content: string): UatType | undefined {
   const rawValue = modeBullet.slice('UAT mode:'.length).trim().toLowerCase();
 
   if (rawValue.startsWith('artifact-driven')) return 'artifact-driven';
+  if (rawValue.startsWith('browser-executable')) return 'browser-executable';
+  if (rawValue.startsWith('runtime-executable')) return 'runtime-executable';
   if (rawValue.startsWith('live-runtime')) return 'live-runtime';
   if (rawValue.startsWith('human-experience')) return 'human-experience';
   if (rawValue.startsWith('mixed')) return 'mixed';
@@ -804,7 +890,7 @@ export async function inlinePriorMilestoneSummary(mid: string, base: string): Pr
  * file not on disk) - callers can distinguish "no manifest" from "empty manifest".
  */
 export async function getManifestStatus(
-  base: string, milestoneId: string,
+  base: string, milestoneId: string, projectRoot?: string,
 ): Promise<ManifestStatus | null> {
   const resolvedPath = resolveMilestoneFile(base, milestoneId, 'SECRETS');
   if (!resolvedPath) return null;
@@ -814,8 +900,17 @@ export async function getManifestStatus(
 
   const manifest = parseSecretsManifest(content);
   const keys = manifest.entries.map(e => e.key);
+
+  // Check both the base path .env AND the project root .env (#1387).
+  // In worktree mode, base is the worktree path which may not have .env.
+  // The project root's .env is where the user actually defined their keys.
   const existingKeys = await checkExistingEnvKeys(keys, resolve(base, '.env'));
   const existingSet = new Set(existingKeys);
+
+  if (projectRoot && projectRoot !== base) {
+    const rootKeys = await checkExistingEnvKeys(keys, resolve(projectRoot, '.env'));
+    for (const k of rootKeys) existingSet.add(k);
+  }
 
   const result: ManifestStatus = {
     pending: [],

@@ -11,13 +11,12 @@ Auto mode is a **state machine driven by files on disk**. It reads `.gsd/STATE.m
 Each slice flows through phases automatically:
 
 ```
-Research → Plan → Execute (per task) → Complete → Reassess Roadmap → Next Slice
-                                                                      ↓ (all slices done)
-                                                              Validate Milestone → Complete Milestone
+Plan (with integrated research) → Execute (per task) → Complete → Reassess Roadmap → Next Slice
+                                                                                      ↓ (all slices done)
+                                                                              Validate Milestone → Complete Milestone
 ```
 
-- **Research** — scouts the codebase and relevant docs
-- **Plan** — decomposes the slice into tasks with must-haves
+- **Plan** — scouts the codebase, researches relevant docs, and decomposes the slice into tasks with must-haves
 - **Execute** — runs each task in a fresh context window
 - **Complete** — writes summary, UAT script, marks roadmap, commits
 - **Reassess** — checks if the roadmap still makes sense
@@ -242,3 +241,15 @@ See [Token Optimization](./token-optimization.md) for details.
 ## Dynamic Model Routing
 
 When enabled, auto-mode automatically selects cheaper models for simple units (slice completion, UAT) and reserves expensive models for complex work (replanning, architectural tasks). See [Dynamic Model Routing](./dynamic-model-routing.md).
+
+## Reactive Task Execution (v2.38)
+
+When `reactive_execution: true` is set in preferences, GSD derives a dependency graph from IO annotations in task plans. Tasks that don't conflict (no shared file reads/writes) are dispatched in parallel via subagents, while dependent tasks wait for their predecessors to complete.
+
+```yaml
+reactive_execution: true    # disabled by default
+```
+
+The graph derivation is pure and deterministic — it resolves a ready-set of tasks, detects conflicts, and guards against deadlocks. Verification results carry forward across parallel batches, so tasks that pass verification don't need to be re-verified when subsequent tasks in the same slice complete.
+
+The implementation lives in `reactive-graph.ts` (graph derivation, ready-set resolution, conflict/deadlock detection) with integration into `auto-dispatch.ts` and `auto-prompts.ts`.

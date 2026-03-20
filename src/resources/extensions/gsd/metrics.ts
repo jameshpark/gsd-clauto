@@ -18,9 +18,12 @@ import type { ExtensionContext } from "@gsd/pi-coding-agent";
 import { gsdRoot } from "./paths.js";
 import { getAndClearSkills } from "./skill-telemetry.js";
 import { loadJsonFile, loadJsonFileOrNull, saveJsonFile } from "./json-persistence.js";
+import { parseUnitId } from "./unit-id.js";
 
-// Re-export from shared — canonical implementation lives in format-utils.
-export { formatTokenCount } from "../shared/mod.js";
+// Re-export from shared — import directly from format-utils to avoid pulling
+// in the full barrel (mod.js → ui.js → @gsd/pi-tui) which breaks when loaded
+// outside jiti's alias resolution (e.g. dynamic import in auto-loop reports).
+export { formatTokenCount } from "../shared/format-utils.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -290,9 +293,8 @@ export function aggregateByPhase(units: UnitMetrics[]): PhaseAggregate[] {
 export function aggregateBySlice(units: UnitMetrics[]): SliceAggregate[] {
   const map = new Map<string, SliceAggregate>();
   for (const u of units) {
-    const parts = u.id.split("/");
-    // Slice ID is parts[0]/parts[1] if it exists, else parts[0]
-    const sliceId = parts.length >= 2 ? `${parts[0]}/${parts[1]}` : parts[0];
+    const { milestone, slice } = parseUnitId(u.id);
+    const sliceId = slice ? `${milestone}/${slice}` : milestone;
     let agg = map.get(sliceId);
     if (!agg) {
       agg = { sliceId, units: 0, tokens: emptyTokens(), cost: 0, duration: 0 };

@@ -9,8 +9,9 @@
  * via prefix matching, so existing projects work without migration.
  */
 
-import { readdirSync, existsSync, Dirent } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, existsSync, realpathSync, Dirent } from "node:fs";
+import { join, dirname, normalize } from "node:path";
+import { spawnSync } from "node:child_process";
 import { nativeScanGsdTree, type GsdTreeEntry } from "./native-parser-bridge.js";
 import { DIR_CACHE_MAX } from "./constants.js";
 
@@ -236,6 +237,23 @@ export function resolveTaskFiles(tasksDir: string, suffix: string): string[] {
   }
 }
 
+/**
+ * Find all task JSON files matching a pattern in a tasks directory.
+ * Returns sorted file names matching T##-SUFFIX.json or legacy T##-*-SUFFIX.json
+ */
+export function resolveTaskJsonFiles(tasksDir: string, suffix: string): string[] {
+  if (!existsSync(tasksDir)) return [];
+  try {
+    const currentPattern = new RegExp(`^T\\d+-${suffix}\\.json$`, "i");
+    const legacyPattern = new RegExp(`^T\\d+-.*-${suffix}\\.json$`, "i");
+    return cachedReaddir(tasksDir)
+      .filter(f => currentPattern.test(f) || legacyPattern.test(f))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 // ─── Full Path Builders ────────────────────────────────────────────────────
 
 export const GSD_ROOT_FILES = {
@@ -260,12 +278,86 @@ const LEGACY_GSD_ROOT_FILES: Record<GSDRootFileKey, string> = {
   KNOWLEDGE: "knowledge.md",
 };
 
-export function gsdRoot(basePath: string): string {
-  return join(basePath, ".gsd");
+// ─── GSD Root Discovery ───────────────────────────────────────────────────────
+
+const gsdRootCache = new Map<string, string>();
+
+/** Exported for tests only — do not call in production code. */
+export function _clearGsdRootCache(): void {
+  gsdRootCache.clear();
 }
 
+/**
+ * Resolve the `.gsd` directory for a given project base path.
+ *
+ * Probe order:
+ *   1. basePath/.gsd         — fast path (common case)
+ *   2. git rev-parse root    — handles cwd-is-a-subdirectory
+ *   3. Walk up from basePath — handles moved .gsd in an ancestor (bounded by git root)
+ *   4. basePath/.gsd         — creation fallback (init scenario)
+ *
+ * Result is cached per basePath for the process lifetime.
+ */
+export function gsdRoot(basePath: string): string {
+  const cached = gsdRootCache.get(basePath);
+  if (cached) return cached;
+
+  const result = probeGsdRoot(basePath);
+  gsdRootCache.set(basePath, result);
+  return result;
+}
+
+function probeGsdRoot(rawBasePath: string): string {
+  // 1. Fast path — check the input path directly
+  const local = join(rawBasePath, ".gsd");
+  if (existsSync(local)) return local;
+
+  // Resolve symlinks so path comparisons work correctly across platforms
+  // (e.g. macOS /var → /private/var). Use rawBasePath as fallback if not resolvable.
+  let basePath: string;
+  try { basePath = realpathSync.native(rawBasePath); } catch { basePath = rawBasePath; }
+
+  // 2. Git root anchor — used as both probe target and walk-up boundary
+  //    Only walk if we're inside a git project — prevents escaping into
+  //    unrelated filesystem territory when running outside any repo.
+  let gitRoot: string | null = null;
+  try {
+    const out = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: basePath,
+      encoding: "utf-8",
+    });
+    if (out.status === 0) {
+      const r = out.stdout.trim();
+      if (r) gitRoot = normalize(r);
+    }
+  } catch { /* git not available */ }
+
+  if (gitRoot) {
+    const candidate = join(gitRoot, ".gsd");
+    if (existsSync(candidate)) return candidate;
+  }
+
+  // 3. Walk up from basePath to the git root (only if we are in a subdirectory)
+  if (gitRoot && basePath !== gitRoot) {
+    let cur = dirname(basePath);
+    while (cur !== basePath) {
+      const candidate = join(cur, ".gsd");
+      if (existsSync(candidate)) return candidate;
+      if (cur === gitRoot) break;
+      basePath = cur;
+      cur = dirname(cur);
+    }
+  }
+
+  // 4. Fallback for init/creation
+  return local;
+}
 export function milestonesDir(basePath: string): string {
   return join(gsdRoot(basePath), "milestones");
+}
+
+export function resolveRuntimeFile(basePath: string): string {
+  return join(gsdRoot(basePath), "RUNTIME.md");
 }
 
 export function resolveGsdRootFile(basePath: string, key: GSDRootFileKey): string {
