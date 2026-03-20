@@ -1,5 +1,5 @@
 import { createAssistantMessageEventStream } from '@gsd/pi-ai'
-import type { AssistantMessage } from '@gsd/pi-ai'
+import type { AssistantMessage, Message } from '@gsd/pi-ai'
 import type { StreamFn } from '@gsd/pi-agent-core'
 import { spawn } from 'node:child_process'
 
@@ -11,6 +11,41 @@ const ZERO_USAGE = {
   totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 } as const
+
+function extractTextContent(
+  content: string | readonly { type: string; text?: string }[],
+): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return (content as { type: string; text?: string }[])
+      .filter((c): c is { type: 'text'; text: string } => c.type === 'text' && typeof c.text === 'string')
+      .map((c) => c.text)
+      .join('\n')
+  }
+  return ''
+}
+
+function buildPromptFromMessages(messages: readonly Message[]): string {
+  if (messages.length === 0) return ''
+  if (messages.length === 1) {
+    const msg = messages[0]
+    return msg.role === 'user' ? extractTextContent(msg.content) : ''
+  }
+
+  const historyParts: string[] = []
+  for (const msg of messages.slice(0, -1)) {
+    if (msg.role === 'user') {
+      historyParts.push(`[User]\n${extractTextContent(msg.content)}`)
+    } else if (msg.role === 'assistant') {
+      historyParts.push(`[Assistant]\n${extractTextContent(msg.content)}`)
+    }
+  }
+
+  const lastMsg = messages[messages.length - 1]
+  const currentPrompt = lastMsg.role === 'user' ? extractTextContent(lastMsg.content) : ''
+
+  return `<conversation_history>\n${historyParts.join('\n\n')}\n</conversation_history>\n\n${currentPrompt}`
+}
 
 /**
  * Creates a StreamFn that delegates to `claude -p` instead of calling the
@@ -25,19 +60,7 @@ export function createClaudeCodeStreamFn(): StreamFn {
   return (model, context, options) => {
     const stream = createAssistantMessageEventStream()
 
-    // Extract the last user message as the prompt
-    const lastUserMsg = [...context.messages].reverse().find((m) => m.role === 'user')
-    let promptText = ''
-    if (lastUserMsg) {
-      if (typeof lastUserMsg.content === 'string') {
-        promptText = lastUserMsg.content
-      } else if (Array.isArray(lastUserMsg.content)) {
-        promptText = lastUserMsg.content
-          .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-          .map((c) => c.text)
-          .join('\n')
-      }
-    }
+    const promptText = buildPromptFromMessages(context.messages)
 
     // Prompt piped via stdin (no positional arg) to avoid OS argument length
     // limits; GSD auto prompts include full task context and can be very large.
